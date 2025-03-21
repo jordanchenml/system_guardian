@@ -3,7 +3,7 @@ name = "system_guardian"
 version = "0.1.0"
 description = ""
 authors = [
-
+    "Jordan Chen <jordanchenml@gmail.com>"
 ]
 maintainers = [
 
@@ -11,7 +11,7 @@ maintainers = [
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = "3.11.4"
 fastapi = "^0.100.0"
 uvicorn = { version = "^0.22.0", extras = ["standard"] }
 pydantic = "^2"
@@ -24,6 +24,7 @@ httptools = "^0.6.0"
 aio-pika = "^9.1.4"
 loguru = "^0.7.0"
 aiokafka = "^0.8.1"
+kafka-python = "2.0.2"
 
 
 [tool.poetry.dev-dependencies]
@@ -69,28 +70,28 @@ env = [
     "SYSTEM_GUARDIAN_DB_BASE=system_guardian_test",
 ]
 
-[fastapi-template.options]
-project_name = "system_guardian"
-api_type = "rest"
-enable_redis = "None"
-enable_rmq = "True"
-ci_type = "none"
-enable_migrations = "None"
-enable_taskiq = "None"
-enable_kube = "None"
-kube_name = "system-guardian"
-enable_routers = "True"
-enable_kafka = "True"
-enable_loguru = "True"
-traefik_labels = "None"
-add_dummy = "None"
-orm = "sqlalchemy"
-self_hosted_swagger = "None"
-prometheus_enabled = "None"
-sentry_enabled = "None"
-otlp_enabled = "None"
-pydanticv1 = "None"
-gunicorn = "None"
+# [fastapi-template.options]
+# project_name = "system_guardian"
+# api_type = "rest"
+# enable_redis = "None"
+# enable_rmq = "True"
+# ci_type = "none"
+# enable_migrations = "None"
+# enable_taskiq = "None"
+# enable_kube = "None"
+# kube_name = "system-guardian"
+# enable_routers = "True"
+# enable_kafka = "True"
+# enable_loguru = "True"
+# traefik_labels = "None"
+# add_dummy = "None"
+# orm = "sqlalchemy"
+# self_hosted_swagger = "None"
+# prometheus_enabled = "None"
+# sentry_enabled = "None"
+# otlp_enabled = "None"
+# pydanticv1 = "None"
+# gunicorn = "None"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

@@ -1,131 +1,122 @@
-# system_guardian
+# System Guardian 🚀
+An AI-powered incident management platform designed to autonomously monitor, analyze, and suggest resolutions for on-call incidents. System Guardian integrates with tools like Slack, GitHub, Datadog, and more to provide **real-time insights** and **AI-driven remediation suggestions**.
 
-This project was generated using fastapi_template.
+## 🌟 Features
+- **Real-time Incident Detection**: Ingests and processes events from **Slack, GitHub, Datadog, Jira**, and other sources.
+- **AI-Powered Resolution Suggestions**: Uses **GPT-4 / Llama 3** and **retrieval-based search** (FAISS/Weaviate) to suggest fixes based on historical incidents.
+- **Event-Driven Architecture**: Utilizes **Kafka / RabbitMQ** for reliable message streaming and processing.
+- **Scalable & Modular**: Microservice-based structure with **FastAPI**, **PostgreSQL**, and **Elasticsearch**.
+- **Monitoring & Logging**: Tracks incidents, logs, and system health using **Datadog & ELK stack**.
 
-## Poetry
+---
 
-This project uses poetry. It's a modern dependency management
-tool.
-
-To run the project use this set of commands:
-
+## 📁 Project Structure
 ```bash
-poetry install
-poetry run python -m system_guardian
-```
-
-This will start the server on the configured host.
-
-You can find swagger documentation at `/api/docs`.
-
-You can read more about poetry here: https://python-poetry.org/
-
-## Docker
-
-You can start the project with docker using this command:
-
-```bash
-docker-compose -f deploy/docker-compose.yml --project-directory . up --build
-```
-
-If you want to develop in docker with autoreload add `-f deploy/docker-compose.dev.yml` to your docker command.
-Like this:
-
-```bash
-docker-compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev.yml --project-directory . up --build
-```
-
-This command exposes the web application on port 8000, mounts current directory and enables autoreload.
-
-But you have to rebuild image every time you modify `poetry.lock` or `pyproject.toml` with this command:
-
-```bash
-docker-compose -f deploy/docker-compose.yml --project-directory . build
-```
-
-## Project structure
-
-```bash
-$ tree "system_guardian"
 system_guardian
-├── conftest.py  # Fixtures for all tests.
-├── db  # module contains db configurations
-│   ├── dao  # Data Access Objects. Contains different classes to interact with database.
-│   └── models  # Package contains different models for ORMs.
-├── __main__.py  # Startup script. Starts uvicorn.
-├── services  # Package for different external services such as rabbit or redis etc.
-├── settings.py  # Main configuration settings for project.
-├── static  # Static content.
-├── tests  # Tests for project.
-└── web  # Package contains web server. Handlers, startup config.
-    ├── api  # Package with all handlers.
-    │   └── router.py  # Main router.
-    ├── application.py  # FastAPI application configuration.
-    └── lifetime.py  # Contains actions to perform on startup and shutdown.
+├── conftest.py           # Fixtures for all tests
+├── db                    # Database configurations and models
+│   ├── dao               # Data Access Objects (Interacts with the database)
+│   └── models            # ORM models for database tables
+├── __main__.py           # Startup script (Launches FastAPI with Uvicorn)
+├── services              # External service integrations (RabbitMQ, Kafka, Redis, etc.)
+│   ├── kafka_producer.py  # Publishes events to Kafka
+│   ├── kafka_consumer.py  # Processes incoming messages from Kafka
+│   ├── slack_service.py   # Handles Slack event ingestion
+│   ├── github_service.py  # Processes GitHub event hooks
+│   ├── datadog_service.py # Handles Datadog alerts
+│   └── ai_engine.py       # AI processing and resolution suggestions
+├── settings.py           # Main project configuration (DB, API keys, environment variables)
+├── static                # Static content (if needed)
+├── tests                 # Unit and integration tests
+└── web                   # Web server and API endpoints
+    ├── api               # REST API handlers
+    │   ├── router.py     # Main API router
+    │   ├── ingest.py     # API for ingesting events from external sources
+    │   ├── incidents.py  # Incident retrieval and analysis API
+    │   ├── resolution.py # AI-based resolution generator API
+    │   └── health.py     # System health check endpoint
+    ├── application.py    # FastAPI application setup
+    └── lifetime.py       # Startup and shutdown tasks
 ```
 
-## Configuration
 
-This application can be configured with environment variables.
+⸻
 
-You can create `.env` file in the root directory and place all
-environment variables here.
+🚀 Getting Started
 
-All environment variables should start with "SYSTEM_GUARDIAN_" prefix.
+1️⃣ Installation
 
-For example if you see in your "system_guardian/settings.py" a variable named like
-`random_parameter`, you should provide the "SYSTEM_GUARDIAN_RANDOM_PARAMETER"
-variable to configure the value. This behaviour can be changed by overriding `env_prefix` property
-in `system_guardian.settings.Settings.Config`.
-
-An example of .env file:
-```bash
-SYSTEM_GUARDIAN_RELOAD="True"
-SYSTEM_GUARDIAN_PORT="8000"
-SYSTEM_GUARDIAN_ENVIRONMENT="dev"
-```
-
-You can read more about BaseSettings class here: https://pydantic-docs.helpmanual.io/usage/settings/
-
-## Pre-commit
-
-To install pre-commit simply run inside the shell:
-```bash
-pre-commit install
-```
-
-pre-commit is very useful to check your code before publishing it.
-It's configured using .pre-commit-config.yaml file.
-
-By default it runs:
-* black (formats your code);
-* mypy (validates types);
-* isort (sorts imports in all files);
-* flake8 (spots possible bugs);
-
-
-You can read more about pre-commit here: https://pre-commit.com/
-
-
-## Running tests
-
-If you want to run it in docker, simply run:
+Clone the repository and set up the environment:
 
 ```bash
-docker-compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev.yml --project-directory . run --build --rm api pytest -vv .
-docker-compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev.yml --project-directory . down
+git clone https://github.com/your-repo/system_guardian.git
+cd system_guardian
+python -m venv venv
+source venv/bin/activate  # For macOS/Linux
+venv\Scripts\activate     # For Windows
+pip install -r requirements.txt
 ```
 
-For running tests on your local machine.
-1. you need to start a database.
+2️⃣ Environment Configuration
 
-I prefer doing it with docker:
-```
-docker run -p "5432:5432" -e "POSTGRES_PASSWORD=system_guardian" -e "POSTGRES_USER=system_guardian" -e "POSTGRES_DB=system_guardian" postgres:13.8-bullseye
-```
+Create a .env file and configure the necessary settings:
 
-
-2. Run the pytest.
 ```bash
-pytest -vv .
+DATABASE_URL=postgresql://user:password@localhost:5432/system_guardian
+KAFKA_BROKER=kafka://localhost:9092
+RABBITMQ_URL=amqp://user:password@localhost:5672
+OPENAI_API_KEY=your-openai-api-key
+SLACK_BOT_TOKEN=your-slack-bot-token
+GITHUB_WEBHOOK_SECRET=your-github-webhook-secret
+DATADOG_API_KEY=your-datadog-api-key
+```
+
+3️⃣ Run the Application
+
+Start the services and run the FastAPI server:
+
+```bash
+uvicorn web.application:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Or use Docker Compose to spin up the full environment:
+
+```bash
+docker-compose up --build
+```
+
+
+⸻
+
+## 🔥 API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| /api/ingest/slack | POST | Ingests Slack messages for incident detection |
+| /api/ingest/github | POST | Captures GitHub events (PRs, Issues, Deployments) |
+| /api/ingest/datadog | POST | Processes Datadog alerts |
+| /api/incidents | GET | Retrieves historical incidents |
+| /api/resolution | POST | AI-driven resolution suggestions |
+| /api/health | GET | Health check |
+
+
+
+⸻
+
+🛠️ Development
+
+Testing
+
+Run unit tests using pytest:
+
+```bash
+pytest tests/
+```
+Linting & Formatting
+
+Ensure code consistency with black and flake8:
+
+```bash
+black .
+flake8 .
 ```
