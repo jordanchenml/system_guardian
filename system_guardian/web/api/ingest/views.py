@@ -1,4 +1,6 @@
-from typing import Optional
+from typing import Optional, Dict, Any
+import json
+from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Header, Request
 
@@ -25,11 +27,34 @@ async def process_github_webhook(
     # Here you would typically validate the webhook signature
     # and process the event according to its type
     
-    # Get the raw JSON data from the request
-    body = await request.json()
-    
     # Log event type for debugging
     print(f"GitHub Event: {x_github_event}")
+    content_type = request.headers.get("content-type", "")
     
-    # Return the body as a Message object
+    # 處理不同格式的請求數據
+    if "application/json" in content_type:
+        # 直接解析 JSON
+        body = await request.json()
+    else:
+        # 處理表單數據
+        form_data = await request.body()
+        form_data_str = form_data.decode('utf-8')
+        
+        try:
+            # 嘗試解析表單數據
+            parsed_data = parse_qs(form_data_str)
+            
+            # GitHub webhook 通常在 'payload' 字段中包含 JSON 數據
+            if 'payload' in parsed_data:
+                payload_json = parsed_data['payload'][0]
+                body = json.loads(payload_json)
+            else:
+                # 如果沒有 payload 字段，可能整個請求體就是 JSON
+                body = json.loads(form_data_str)
+        except Exception as e:
+            print(f"Error parsing request data: {e}")
+            # 返回錯誤訊息作為回應
+            return Message(message=f"Error processing webhook: {str(e)}")
+    
+    # 返回處理後的數據
     return Message(message=body)
