@@ -1,6 +1,7 @@
 """Services for processing and forwarding webhook events."""
 import asyncio
-from typing import Optional
+import re
+from typing import Optional, Dict
 
 from loguru import logger
 from aio_pika import Channel, Message
@@ -13,6 +14,33 @@ from system_guardian.web.api.ingest.schema import StandardEventMessage
 class MessagePublisher:
     """Service for publishing messages to different message queues."""
 
+    # Default topics mapping
+    DEFAULT_TOPICS: Dict[str, str] = {
+        "github": "github_events",
+        "jira": "jira_events",
+        # Add more sources here as needed
+    }
+
+    @staticmethod
+    def sanitize_topic_name(topic: str) -> str:
+        """
+        Sanitize the topic name to make it valid for Kafka.
+        
+        Kafka topic names can only include letters, numbers, dots, underscores, and hyphens.
+        This method replaces any invalid characters with underscores.
+        
+        :param topic: The raw topic name
+        :returns: A sanitized topic name that is valid for Kafka
+        """
+        # Replace all non-alphanumeric characters except dots, underscores, and hyphens with underscores
+        sanitized = re.sub(r'[^a-zA-Z0-9\._-]', '_', topic)
+        
+        # Ensure the topic name doesn't start with a dot or underscore (Kafka recommendation)
+        if sanitized and sanitized[0] in ['.', '_']:
+            sanitized = 'topic' + sanitized
+            
+        return sanitized
+
     @staticmethod
     async def send_to_kafka(
         producer: AIOKafkaProducer,
@@ -24,11 +52,24 @@ class MessagePublisher:
         
         :param producer: Kafka producer instance
         :param event_message: The standardized event message
-        :param topic: Optional kafka topic, if not provided uses source_eventtype format
+        :param topic: Optional kafka topic, if not provided uses a simplified topic strategy
         """
         if not topic:
-            # Generate topic based on source and event type
-            topic = f"{event_message.source}_{event_message.event_type}"
+            # Use a simpler topic strategy - one topic per source
+            # This avoids having to create many different topics in Kafka
+            if event_message.source in MessagePublisher.DEFAULT_TOPICS:
+                topic = MessagePublisher.DEFAULT_TOPICS[event_message.source]
+            else:
+                # Fallback to a generic topic
+                topic = "webhook_events"
+                
+            logger.info(f"Using topic '{topic}' for event from source '{event_message.source}' of type '{event_message.event_type}'")
+        else:
+            # If a topic was provided, still ensure it's valid
+            sanitized_topic = MessagePublisher.sanitize_topic_name(topic)
+            if topic != sanitized_topic:
+                logger.warning(f"Provided topic name '{topic}' was sanitized to '{sanitized_topic}'")
+                topic = sanitized_topic
         
         try:
             logger.info(f"Sending message to Kafka topic: {topic}")

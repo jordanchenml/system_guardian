@@ -49,7 +49,8 @@ class Settings(BaseSettings):
     db_echo: bool = False
 
     # Variables for RabbitMQ
-    rabbit_host: str = "system_guardian-rmq"
+    # rabbit_host: str = "system_guardian-rmq"
+    rabbit_host: str = "localhost"
     rabbit_port: int = 5672
     rabbit_user: str = "guest"
     rabbit_pass: str = "guest"
