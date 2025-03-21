@@ -5,12 +5,12 @@ from urllib.parse import parse_qs
 from fastapi import APIRouter, Header, Request
 from loguru import logger
 
-from system_guardian.web.api.ingest.schema import Message
+from system_guardian.web.api.ingest.github.schema import Message
 
 router = APIRouter()
 
 
-@router.post("/github", response_model=Message)
+@router.post("/", response_model=Message)
 async def process_github_webhook(
     request: Request,
     x_github_event: Optional[str] = Header(None, alias="X-GitHub-Event"),

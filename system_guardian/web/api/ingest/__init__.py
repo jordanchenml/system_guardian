@@ -1,4 +1,4 @@
 """Ingest API."""
-from system_guardian.web.api.ingest.views import router
+from . import github
 
-__all__ = ["router"]
+__all__ = ["github"]
