@@ -1,4 +1,4 @@
 """Ingest API."""
-from . import github
+from . import github, jira, schema
 
-__all__ = ["github"]
+__all__ = ["github", "jira", "schema"]
