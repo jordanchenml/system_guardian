@@ -56,5 +56,8 @@ async def process_github_webhook(
             # 返回錯誤訊息作為回應
             return Message(message=f"Error processing webhook: {str(e)}")
     
+    # 打印 body 的內容
+    print(f"Received body: {body}")
+    
     # 返回處理後的數據
     return Message(message=body)
