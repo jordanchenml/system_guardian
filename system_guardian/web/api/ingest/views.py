@@ -3,10 +3,9 @@ import json
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Header, Request
+from loguru import logger
 
 from system_guardian.web.api.ingest.schema import Message
-
-from loguru import logger
 
 router = APIRouter()
 
@@ -26,40 +25,51 @@ async def process_github_webhook(
     :param x_github_event: GitHub event type from X-GitHub-Event header
     :returns: message indicating successful processing
     """
-    # Here you would typically validate the webhook signature
-    # and process the event according to its type
+    # Log the received event type for debugging purposes
+    logger.info(f"Received GitHub event: {x_github_event}")
     
-    # Log event type for debugging
-    logger.info(f"GitHub Event: {x_github_event}")
-    content_type = request.headers.get("content-type", "")
-    
-    # 處理不同格式的請求數據
-    if "application/json" in content_type:
-        # 直接解析 JSON
-        body = await request.json()
-    else:
-        # 處理表單數據
-        form_data = await request.body()
-        form_data_str = form_data.decode('utf-8')
+    try:
+        # Determine the request content type
+        content_type = request.headers.get("content-type", "")
         
-        try:
-            # 嘗試解析表單數據
+        # Process the request based on content type
+        if "application/json" in content_type:
+            # Direct JSON parsing for JSON content type
+            body = await request.json()
+        else:
+            # Handle form data (application/x-www-form-urlencoded)
+            form_data = await request.body()
+            form_data_str = form_data.decode('utf-8')
+            
+            # Parse form data
             parsed_data = parse_qs(form_data_str)
             
-            # GitHub webhook 通常在 'payload' 字段中包含 JSON 數據
+            # GitHub webhooks typically include JSON data in the 'payload' field
             if 'payload' in parsed_data:
                 payload_json = parsed_data['payload'][0]
                 body = json.loads(payload_json)
             else:
-                # 如果沒有 payload 字段，可能整個請求體就是 JSON
+                # If no payload field, try parsing the entire body as JSON
                 body = json.loads(form_data_str)
-        except Exception as e:
-            print(f"Error parsing request data: {e}")
-            # 返回錯誤訊息作為回應
-            return Message(message=f"Error processing webhook: {str(e)}")
-    
-    # 打印 body 的內容
-    logger.debug(f"Received body: {body}")
-    
-    # 返回處理後的數據
-    return Message(message=body)
+        
+        # Log the parsed payload for debugging
+        logger.debug(f"Successfully parsed GitHub payload: {body}")
+        
+        # Return the processed message
+        return Message(message=body)
+        
+    except json.JSONDecodeError as e:
+        # Handle JSON parsing errors
+        error_msg = f"Invalid JSON in webhook payload: {str(e)}"
+        logger.error(error_msg)
+        return Message(message={"error": error_msg})
+    except UnicodeDecodeError as e:
+        # Handle encoding errors
+        error_msg = f"Encoding error in webhook payload: {str(e)}"
+        logger.error(error_msg)
+        return Message(message={"error": error_msg})
+    except Exception as e:
+        # Handle any other unexpected errors
+        error_msg = f"Error processing GitHub webhook: {str(e)}"
+        logger.exception(error_msg)
+        return Message(message={"error": error_msg})

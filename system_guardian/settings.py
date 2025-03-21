@@ -58,7 +58,8 @@ class Settings(BaseSettings):
     rabbit_pool_size: int = 2
     rabbit_channel_pool_size: int = 10
 
-    kafka_bootstrap_servers: List[str] = ["system_guardian-kafka:9092"]
+    # kafka_bootstrap_servers: List[str] = ["system_guardian-kafka:9092"]
+    kafka_bootstrap_servers: List[str] = ["127.0.0.1:9092"]
 
     @property
     def db_url(self) -> URL:
