@@ -6,6 +6,8 @@ from fastapi import APIRouter, Header, Request
 
 from system_guardian.web.api.ingest.schema import Message
 
+from loguru import logger
+
 router = APIRouter()
 
 
@@ -28,7 +30,7 @@ async def process_github_webhook(
     # and process the event according to its type
     
     # Log event type for debugging
-    print(f"GitHub Event: {x_github_event}")
+    logger.info(f"GitHub Event: {x_github_event}")
     content_type = request.headers.get("content-type", "")
     
     # 處理不同格式的請求數據
@@ -57,7 +59,7 @@ async def process_github_webhook(
             return Message(message=f"Error processing webhook: {str(e)}")
     
     # 打印 body 的內容
-    print(f"Received body: {body}")
+    logger.debug(f"Received body: {body}")
     
     # 返回處理後的數據
     return Message(message=body)
