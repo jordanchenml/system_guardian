@@ -2,7 +2,7 @@
 An AI-powered incident management platform designed to autonomously monitor, analyze, and suggest resolutions for on-call incidents. System Guardian integrates with tools like Slack, GitHub, Datadog, and more to provide **real-time insights** and **AI-driven remediation suggestions**.
 
 ## 🌟 Features
-- **Real-time Incident Detection**: Ingests and processes events from **Slack, GitHub, Datadog, Jira**, and other sources.
+- **Real-time Incident Detection**: Ingests and processes events from **Slack, GitHub, Jira**, and other sources.
 - **AI-Powered Resolution Suggestions**: Uses **GPT-4 / Llama 3** and **retrieval-based search** (FAISS/Weaviate) to suggest fixes based on historical incidents.
 - **Event-Driven Architecture**: Utilizes **Kafka / RabbitMQ** for reliable message streaming and processing.
 - **Scalable & Modular**: Microservice-based structure with **FastAPI**, **PostgreSQL**, and **Elasticsearch**.
