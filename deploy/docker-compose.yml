@@ -1,0 +1,94 @@
+version: '3.9'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: ./deploy/Dockerfile
+      target: prod
+    image: system_guardian:${SYSTEM_GUARDIAN_VERSION:-latest}
+    restart: always
+    env_file:
+    - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      rmq:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SYSTEM_GUARDIAN_HOST: 0.0.0.0
+      SYSTEM_GUARDIAN_DB_HOST: system_guardian-db
+      SYSTEM_GUARDIAN_DB_PORT: 5432
+      SYSTEM_GUARDIAN_DB_USER: system_guardian
+      SYSTEM_GUARDIAN_DB_PASS: system_guardian
+      SYSTEM_GUARDIAN_DB_BASE: system_guardian
+      SYSTEM_GUARDIAN_RABBIT_HOST: system_guardian-rmq
+      TESTKAFKA_KAFKA_BOOTSTRAP_SERVERS: '["system_guardian-kafka:9092"]'
+
+  db:
+    image: postgres:13.8-bullseye
+    hostname: system_guardian-db
+    environment:
+      POSTGRES_PASSWORD: "system_guardian"
+      POSTGRES_USER: "system_guardian"
+      POSTGRES_DB: "system_guardian"
+    volumes:
+    - system_guardian-db-data:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: pg_isready -U system_guardian
+      interval: 2s
+      timeout: 3s
+      retries: 40
+
+  rmq:
+    image: rabbitmq:3.9.16-alpine
+    hostname: "system_guardian-rmq"
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: "guest"
+      RABBITMQ_DEFAULT_PASS: "guest"
+      RABBITMQ_DEFAULT_VHOST: "/"
+    healthcheck:
+      test: rabbitmq-diagnostics check_running -q
+      interval: 3s
+      timeout: 3s
+      retries: 50
+
+  zookeeper:
+    image: "bitnami/zookeeper:3.7.1"
+    hostname: "system_guardian-zookeeper"
+    environment:
+      ALLOW_ANONYMOUS_LOGIN: "yes"
+      ZOO_LOG_LEVEL: "ERROR"
+    healthcheck:
+      test: zkServer.sh status
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: "bitnami/kafka:3.2.0"
+    hostname: "system_guardian-kafka"
+    environment:
+      KAFKA_BROKER_ID: "1"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://0.0.0.0:9092"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://system_guardian-kafka:9092"
+      KAFKA_CFG_ZOOKEEPER_CONNECT: "system_guardian-zookeeper:2181"
+    healthcheck:
+      test: kafka-topics.sh --list --bootstrap-server localhost:9092
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+
+
+
+volumes:
+  system_guardian-db-data:
+    name: system_guardian-db-data
