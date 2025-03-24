@@ -7,5 +7,13 @@ from system_guardian.services.ai.incident_similarity import (
 from system_guardian.services.ai.severity_classifier import (
     SeverityClassifierService,
 )
+from system_guardian.services.ai.incident_detector import (
+    IncidentDetector,
+)
 
-__all__ = ["IncidentSimilarityService", "IncidentEmbedding", "SeverityClassifierService"]
+__all__ = [
+    "IncidentSimilarityService", 
+    "IncidentEmbedding", 
+    "SeverityClassifierService",
+    "IncidentDetector"
+]

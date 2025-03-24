@@ -1,4 +1,4 @@
-"""Consumers for processing messages from message queues."""
+"""Consumers services module."""
 
 from system_guardian.services.consumers.event_consumer import EventConsumer
 

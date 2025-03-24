@@ -6,7 +6,7 @@ from openai import AsyncOpenAI
 from loguru import logger
 
 from system_guardian.db.models.incidents import Incident
-
+from system_guardian.settings import settings
 
 class SeverityClassifierService:
     """Service for classifying incident severity using AI."""
@@ -22,7 +22,7 @@ class SeverityClassifierService:
         :param openai_client: OpenAI client instance
         :param model: OpenAI model to use for classification
         """
-        self.openai_client = openai_client or AsyncOpenAI()
+        self.openai_client = openai_client or AsyncOpenAI(api_key=settings.openai_api_key)
         self.model = model
         self.severity_levels = ["low", "medium", "high", "critical"]
     

@@ -13,6 +13,7 @@ from sqlalchemy.future import select
 from system_guardian.db.models.incidents import Event, Incident
 from system_guardian.web.api.ingest.schema import StandardEventMessage
 from system_guardian.settings import settings
+from system_guardian.services.ai.incident_detector import IncidentDetector
 
 
 class EventConsumer:
@@ -25,6 +26,7 @@ class EventConsumer:
         rmq_exchange: str = "webhook_events",
         rmq_queue: str = "webhook_events_queue",
         rmq_routing_keys: Optional[List[str]] = None,
+        auto_incident_creation: bool = True,
     ):
         """
         Initialize the event consumer.
@@ -34,6 +36,7 @@ class EventConsumer:
         :param rmq_exchange: RabbitMQ exchange name
         :param rmq_queue: RabbitMQ queue name
         :param rmq_routing_keys: List of RabbitMQ routing keys to bind
+        :param auto_incident_creation: Whether to automatically create incidents from events
         """
         self.db_session_factory = db_session_factory
         self.kafka_topics = kafka_topics or ["github_events", "jira_events", "webhook_events"]
@@ -41,6 +44,10 @@ class EventConsumer:
         self.rmq_queue = rmq_queue
         self.rmq_routing_keys = rmq_routing_keys or ["github.*", "jira.*"]
         self.should_exit = False
+        self.auto_incident_creation = auto_incident_creation
+        
+        # Initialize incident detector
+        self.incident_detector = IncidentDetector(db_session_factory)
 
     async def start(self) -> None:
         """Start consuming messages from Kafka and RabbitMQ."""
@@ -172,12 +179,23 @@ class EventConsumer:
                 # Create a session
                 async with self.db_session_factory() as session:
                     # Store the event
-                    await self.store_event(
+                    event = await self.store_event(
                         session=session,
                         source=message_data["source"],
                         event_type=message_data["event_type"],
                         raw_payload=message_data["raw_payload"],
                     )
+                    
+                    # If auto incident creation is enabled, check if an incident should be created
+                    if self.auto_incident_creation and event and event.incident_id is None:
+                        logger.warning(f"Checking for auto incident creation for {event.source} {event.event_type}")
+                        await self.check_for_auto_incident_creation(
+                            session=session,
+                            event_id=event.id,
+                            source=event.source,
+                            event_type=event.event_type, 
+                            payload=event.content
+                        )
             else:
                 logger.warning(f"Received message in unexpected format: {message_data}")
                 
@@ -252,13 +270,72 @@ class EventConsumer:
             .where(Incident.status.in_(["open", "investigating"]))
             .order_by(Incident.created_at.desc())
         )
+        # TODO: Add more sophisticated logic here
         
         result = await session.execute(query)
         incident = result.scalars().first()
         
         # If there's a relevant incident, return its ID
-        if incident:
-            return incident.id
+        # if incident:
+        #     return incident.id
             
         # Otherwise, return None (event will be stored without an incident relation)
         return None 
+
+    async def check_for_auto_incident_creation(
+        self,
+        session: AsyncSession,
+        event_id: int,
+        source: str,
+        event_type: str,
+        payload: Dict[str, Any]
+    ) -> Optional[Incident]:
+        """
+        Check if an incident should be automatically created from this event.
+        
+        :param session: Database session
+        :param event_id: Event ID
+        :param source: Event source
+        :param event_type: Event type
+        :param payload: Event payload
+        :returns: Created incident or None
+        """
+        logger.debug(f"Checking if incident should be created for {source}/{event_type} event")
+        
+        try:
+            # Check if the event meets the conditions for creating an incident
+            meets_conditions = await self.incident_detector.check_event_conditions(
+                payload, source, event_type
+            )
+
+            logger.warning(f"Meets conditions: {meets_conditions}")
+            
+            if not meets_conditions:
+                logger.debug(f"Event does not meet basic conditions for incident creation")
+                return None
+                
+            # Check for threshold breach
+            threshold_breach = await self.incident_detector.check_event_thresholds(
+                session, source, event_type
+            )
+            
+            # Check for keywords
+            has_keywords = await self.incident_detector.analyze_content_for_keywords(
+                payload, source, event_type
+            )
+            
+            # Create incident if any detection method is triggered
+            if threshold_breach or has_keywords:
+                logger.info(f"Auto-creating incident from {source}/{event_type} event " +
+                           f"(threshold_breach={threshold_breach}, has_keywords={has_keywords})")
+                
+                return await self.incident_detector.create_incident_from_event(
+                    session, source, event_type, payload, event_id
+                )
+            else:
+                logger.debug(f"Event did not trigger incident creation criteria")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error in auto incident detection: {str(e)}")
+            return None 
