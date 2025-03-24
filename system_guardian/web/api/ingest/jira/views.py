@@ -59,7 +59,7 @@ async def process_jira_webhook(
             MessagePublisher.publish_event,
             event_message=event_message,
             kafka_producer=kafka_producer,
-            # rmq_channel_pool=rmq_channel_pool,
+            rmq_channel_pool=rmq_channel_pool,
         )
         
         return Message(message=body)

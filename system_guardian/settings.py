@@ -1,7 +1,8 @@
 import enum
+import os
 from pathlib import Path
 from tempfile import gettempdir
-from typing import List
+from typing import List, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from yarl import URL
@@ -28,8 +29,8 @@ class Settings(BaseSettings):
     with environment variables.
     """
 
-    host: str = "127.0.0.1"
-    port: int = 8000
+    host: str = "localhost"
+    port: int = 5566
     # quantity of workers for uvicorn
     workers_count: int = 1
     # Enable uvicorn reloading
@@ -60,7 +61,19 @@ class Settings(BaseSettings):
     rabbit_channel_pool_size: int = 10
 
     # kafka_bootstrap_servers: List[str] = ["system_guardian-kafka:9092"]
-    kafka_bootstrap_servers: List[str] = ["127.0.0.1:9092"]
+    kafka_bootstrap_servers: List[str] = ["localhost:9092"]
+    
+    # Qdrant Vector DB settings
+    qdrant_host: str = "localhost"
+    qdrant_port: int = 6333
+    qdrant_grpc_port: int = 6334
+    qdrant_api_key: Optional[str] = None
+    qdrant_timeout: int = 10  # Seconds
+    
+    # OpenAI settings
+    openai_api_key: str = os.getenv("SYSTEM_GUARDIAN_OPENAI_API_KEY")
+    openai_embedding_model: str = "text-embedding-ada-002"
+    openai_completion_model: str = "gpt-3.5-turbo"
 
     @property
     def db_url(self) -> URL:

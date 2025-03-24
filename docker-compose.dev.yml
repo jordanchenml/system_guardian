@@ -1,6 +1,33 @@
 version: '3.9'
 
 services:
+  event_consumer:
+    build:
+      context: .
+      dockerfile: ./deploy/Dockerfile
+      target: dev
+    restart: always
+    command: ["python", "-m", "system_guardian.event_consumer_service"]
+    volumes:
+      - .:/app:cached
+    depends_on:
+      db:
+        condition: service_healthy
+      rmq:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SYSTEM_GUARDIAN_DB_HOST: system_guardian-db
+      SYSTEM_GUARDIAN_DB_PORT: 5432
+      SYSTEM_GUARDIAN_DB_USER: system_guardian
+      SYSTEM_GUARDIAN_DB_PASS: system_guardian
+      SYSTEM_GUARDIAN_DB_BASE: system_guardian
+      SYSTEM_GUARDIAN_RABBIT_HOST: system_guardian-rmq
+      SYSTEM_GUARDIAN_KAFKA_BOOTSTRAP_SERVERS: '["localhost:9092"]'
+      SYSTEM_GUARDIAN_RELOAD: "True"
+      SYSTEM_GUARDIAN_LOG_LEVEL: "debug"
+
   db:
     image: postgres:13.8-bullseye
     hostname: system_guardian-db
@@ -20,7 +47,7 @@ services:
       retries: 40
 
   rmq:
-    image: rabbitmq:3.9.16-alpine
+    image: rabbitmq:3.9.16-management-alpine
     hostname: "system_guardian-rmq"
     restart: always
     ports:
@@ -51,8 +78,8 @@ services:
       retries: 30
 
   kafka:
-    image: "bitnami/kafka:3.2.0"
-    platform: linux/amd64
+    image: "bitnami/kafka:latest"
+    platform: linux/arm64
     hostname: "system_guardian-kafka"
     ports:
     - "9092:9092"
@@ -71,6 +98,25 @@ services:
       zookeeper:
         condition: service_healthy
 
+  qdrant:
+    image: "qdrant/qdrant:v1.7.4"
+    hostname: "system_guardian-qdrant"
+    ports:
+      - "6333:6333"  # REST API
+      - "6334:6334"  # gRPC API
+    volumes:
+      - qdrant-data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__TELEMETRY_DISABLED: "true"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:6333/healthz"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+    restart: always
+
 volumes:
   system_guardian-db-data:
     name: system_guardian-db-data
+  qdrant-data:
+    name: system_guardian-qdrant-data
