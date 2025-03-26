@@ -1,5 +1,6 @@
 from typing import Awaitable, Callable
 import asyncio
+import logging
 
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -10,6 +11,7 @@ from system_guardian.services.kafka.lifetime import init_kafka, shutdown_kafka
 from system_guardian.services.rabbit.lifetime import init_rabbit, shutdown_rabbit
 from system_guardian.services.consumers.event_consumer import EventConsumer
 from system_guardian.settings import settings
+from system_guardian.logging_config import configure_sqlalchemy_logging
 
 
 def _setup_db(app: FastAPI) -> None:  # pragma: no cover
@@ -22,7 +24,15 @@ def _setup_db(app: FastAPI) -> None:  # pragma: no cover
 
     :param app: fastAPI application.
     """
-    engine = create_async_engine(str(settings.db_url), echo=settings.db_echo)
+    # 確保 SQLAlchemy 日誌被禁用
+    configure_sqlalchemy_logging()
+    for logger_name in ['sqlalchemy', 'sqlalchemy.engine', 'sqlalchemy.pool', 'sqlalchemy.orm']:
+        logging.getLogger(logger_name).setLevel(logging.CRITICAL + 10)
+        logging.getLogger(logger_name).disabled = True
+        logging.getLogger(logger_name).propagate = False
+    
+    # 創建引擎時明確禁用 echo
+    engine = create_async_engine(str(settings.db_url), echo=False)
     session_factory = async_sessionmaker(
         engine,
         expire_on_commit=False,

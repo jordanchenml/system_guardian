@@ -11,26 +11,42 @@ from sqlalchemy import func, and_, text
 
 from system_guardian.db.models.incidents import Event, Incident
 from system_guardian.services.ai.severity_classifier import SeverityClassifierService
-from system_guardian.services.config.incident_rules import ConfigManager, IncidentDetectionConfig
+from system_guardian.services.config import ConfigManager, IncidentDetectionConfig
 from system_guardian.services.ai.incident_similarity import IncidentSimilarityService, IncidentEmbedding
 from system_guardian.services.vector_db.dependencies import get_qdrant_client
+from system_guardian.settings import settings
+from openai import AsyncOpenAI
 
 
 class IncidentDetector:
     """Service for automatically detecting and creating incidents from events."""
 
-    def __init__(self, db_session_factory, severity_classifier=None, config_manager=None):
+    def __init__(
+        self,
+        config_manager: ConfigManager,
+        llm_client: Optional[AsyncOpenAI] = None,
+        llm_model: Optional[str] = None,
+        severity_classifier: Optional[SeverityClassifierService] = None
+    ):
         """
         Initialize the incident detector.
-
-        :param db_session_factory: Factory for creating database sessions
+        
+        :param config_manager: Configuration manager instance
+        :param llm_client: OpenAI client for LLM-based detection
+        :param llm_model: LLM model to use
         :param severity_classifier: Optional severity classifier service
-        :param config_manager: Optional configuration manager instance
         """
-        self.db_session_factory = db_session_factory
+        self.config_manager = config_manager
+        self.detection_rules = {}
+        self.config_loaded = False
+        self.llm_client = llm_client or AsyncOpenAI(api_key=settings.openai_api_key)
+        self.llm_model = llm_model or (
+            settings.ai_incident_detection_model 
+            if settings.ai_allow_advanced_models 
+            else settings.openai_completion_model
+        )
         self.severity_classifier = severity_classifier or SeverityClassifierService()
-        self.config_manager = config_manager or ConfigManager()
-        self.config = None
+        self._last_analysis = None
         
     async def ensure_config_loaded(self) -> IncidentDetectionConfig:
         """
@@ -38,7 +54,8 @@ class IncidentDetector:
         
         :returns: Incident detection configuration
         """
-        if self.config is None:
+        if self.config_loaded is False:
+            self.config_loaded = True
             self.config = await self.config_manager.load_config()
         return self.config
     
@@ -121,10 +138,40 @@ class IncidentDetector:
         text_content = self._extract_text_content(payload, source, event_type)
         text_content = text_content.lower()
         
+        # Traditional keyword matching
         found_keywords = []
         for keyword in keywords:
             if keyword.lower() in text_content:
                 found_keywords.append(keyword)
+        
+        # If we have LLM client available and no keywords found, try semantic search
+        if self.llm_client and not found_keywords:
+            try:
+                # Convert keywords to a searchable format
+                keywords_text = ", ".join(keywords)
+                query_text = f"Event: {text_content}\n\nDoes this event contain any of these keywords or concepts: {keywords_text}?"
+                
+                # Use LLM to determine if there's a match
+                response = await self.llm_client.chat.completions.create(
+                    model=self.llm_model,
+                    messages=[
+                        {"role": "system", "content": "You are an incident detection assistant that helps identify if an event contains keywords or concepts that indicate an incident."},
+                        {"role": "user", "content": query_text}
+                    ],
+                    temperature=0.1,
+                    max_tokens=100
+                )
+                
+                response_text = response.choices[0].message.content.lower()
+                has_semantic_match = any(phrase in response_text for phrase in ["yes", "match", "contains", "found", "present", "detected"])
+                
+                if has_semantic_match:
+                    logger.info(f"LLM-enhanced keyword analysis found semantic match in {source}/{event_type} event")
+                    return True
+                    
+            except Exception as e:
+                logger.error(f"Error in LLM-enhanced keyword analysis: {str(e)}")
+                # Fall back to traditional method if LLM analysis fails
                 
         if found_keywords:
             logger.info(f"Found keywords in {source}/{event_type} event: {', '.join(found_keywords)}")
@@ -160,15 +207,92 @@ class IncidentDetector:
         except:
             return str(payload)
     
+    async def _analyze_with_llm(self, payload: Dict[str, Any], source: str, event_type: str) -> Dict[str, Any]:
+        """
+        Use LLM to analyze if an event should be considered an incident.
+        
+        :param payload: Event payload
+        :param source: Event source
+        :param event_type: Event type
+        :returns: Analysis result with decision and explanation
+        """
+        try:
+            # Prepare the prompt
+            prompt = f"""
+            Analyze this event and determine if it should be considered a system incident that requires attention.
+            
+            Event Details:
+            - Source: {source}
+            - Event Type: {event_type}
+            - Payload: {payload}
+            
+            Consider the following factors:
+            1. Severity of the event
+            2. Potential impact on system operations
+            3. Whether immediate action is required
+            4. Historical context (if similar events typically indicate problems)
+            
+            Return your analysis as a JSON object with the following structure:
+            {{
+                "is_incident": boolean,
+                "confidence": float,  # 0.0 to 1.0
+                "severity": string,  # "low", "medium", "high", or "critical"
+                "reasoning": string,
+                "recommended_actions": [string]
+            }}
+            """
+            
+            # Call LLM for analysis
+            response = await self.llm_client.chat.completions.create(
+                model=self.llm_model,
+                messages=[
+                    {"role": "system", "content": "You are an expert system incident analyzer. Your task is to determine if events should be classified as incidents requiring attention."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"}
+            )
+            
+            # Parse response
+            analysis = response.choices[0].message.content
+            return json.loads(analysis)
+            
+        except Exception as e:
+            logger.error(f"Error in LLM analysis: {str(e)}")
+            # Fall back to rule-based approach if LLM fails
+            return {
+                "is_incident": None,
+                "confidence": 0.0,
+                "severity": None,
+                "reasoning": f"LLM analysis failed: {str(e)}",
+                "recommended_actions": []
+            }
+
     async def check_event_conditions(self, payload: Dict[str, Any], source: str, event_type: str) -> bool:
         """
         Check if event meets the conditions for creating an incident.
+        Uses both LLM and rule-based approaches for robust detection.
         
         :param payload: Event payload
         :param source: Event source
         :param event_type: Event type
         :returns: True if conditions are met, False otherwise
         """
+        # First, try LLM-based analysis
+        llm_analysis = await self._analyze_with_llm(payload, source, event_type)
+        
+        # If LLM gives a high-confidence result, use it
+        if llm_analysis["confidence"] >= 0.8:
+            if llm_analysis["is_incident"]:
+                logger.info(f"LLM detected incident with confidence {llm_analysis['confidence']}: {llm_analysis['reasoning']}")
+                # Store the analysis for later use in incident creation
+                self._last_analysis = llm_analysis
+                return True
+            return False
+            
+        # Fall back to rule-based approach if LLM is not confident
+        logger.info("LLM confidence low, falling back to rule-based detection")
+        
         # Ensure config is loaded
         await self.ensure_config_loaded()
         
@@ -270,18 +394,22 @@ class IncidentDetector:
                 created_at=datetime.utcnow()
             )
             
+            logger.debug(f"[DB] Executing insert operation: incident[{source}/{severity}] '{title[:30]}...'")
             session.add(new_incident)
             await session.commit()
+            logger.debug(f"[DB] Incident commit successful")
             await session.refresh(new_incident)
+            logger.debug(f"[DB] Incident object reloaded successfully: ID={new_incident.id}")
             
             # Update event incident relation
             await self._update_event_incident_relation(session, event_id, new_incident.id)
             
             # Associate other related unlinked events
-            await self._associate_related_events(session, source, event_type, new_incident.id)
+            await self._associate_related_events(session, new_incident, source, event_type)
             
             # Add incident to vector database for similarity search
             try:
+                logger.debug(f"[VECTOR_DB] Preparing to index incident #{new_incident.id} in vector database")
                 # Get Qdrant client
                 qdrant_client = get_qdrant_client()
                 
@@ -300,9 +428,11 @@ class IncidentDetector:
                 )
                 
                 # Index in vector database
+                logger.debug(f"[VECTOR_DB] Starting vector embedding generation for incident #{new_incident.id}")
                 indexed = await similarity_service.index_incident(incident_embedding)
                 if indexed:
                     logger.info(f"Indexed incident {new_incident.id} in vector database")
+                    logger.debug(f"[VECTOR_DB] Incident #{new_incident.id} successfully added to vector database")
                 else:
                     logger.error(f"Failed to index incident {new_incident.id} in vector database")
             except Exception as e:
@@ -385,15 +515,16 @@ class IncidentDetector:
             logger.debug(f"Associated event {event_id} with incident {incident_id}")
     
     async def _associate_related_events(self, session: AsyncSession, 
+                                      incident: Incident,
                                       source: str, event_type: str, 
-                                      incident_id: int, max_age_hours: int = 24) -> None:
+                                      max_age_hours: int = 24) -> None:
         """
         Associate related unlinked events with the new incident.
         
         :param session: Database session
+        :param incident: The incident object
         :param source: Event source
         :param event_type: Event type
-        :param incident_id: Incident ID
         :param max_age_hours: Maximum age of events to associate (in hours)
         """
         # Find related events with no incident association
@@ -415,10 +546,15 @@ class IncidentDetector:
         result = await session.execute(query)
         events = result.scalars().all()
         
+        if events:
+            logger.debug(f"[DB] Associating {len(events)} related events to incident #{incident.id}")
+        
         # Link events to this incident
         for event in events:
-            event.incident_id = incident_id
+            event.incident_id = incident.id
+            logger.debug(f"[DB] Associating event ID={event.id} to incident #{incident.id}")
             
         if events:
             await session.commit()
-            logger.info(f"Associated {len(events)} additional events with incident {incident_id}") 
+            logger.debug(f"[DB] Association update committed successfully")
+            logger.info(f"Associated {len(events)} additional events with incident {incident.id}") 

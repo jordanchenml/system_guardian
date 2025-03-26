@@ -45,11 +45,13 @@ async def process_jira_webhook(
         # Parse the request body as JSON
         body = await request.json()
         logger.debug(f"Received Jira webhook body: {body}")
+
+        event_type = x_jira_event or extract_event_type_from_body(body) or "unknown"
         
         # Create standardized event message
         event_message = StandardEventMessage(
             source="jira",
-            event_type=x_jira_event or extract_event_type_from_body(body) or "unknown",
+            event_type=event_type.split(":")[-1],
             raw_payload=body,
         )
         

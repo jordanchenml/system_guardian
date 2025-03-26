@@ -55,8 +55,9 @@
       "conditions": {
         "issue": {
           "event_types": [
-            "jira:issue_created",
-            "jira:issue_updated"
+            "issue_created",
+            "issue_updated",
+            "issue_commented"
           ],
           "create_incident_on": [
             "created",

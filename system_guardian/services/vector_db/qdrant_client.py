@@ -53,6 +53,7 @@ class QdrantClient:
             port=port,
             api_key=api_key,
             timeout=timeout,
+            check_compatibility=False
         )
         logger.info(f"Initialized Qdrant client: {host}:{port}")
 
@@ -131,6 +132,7 @@ class QdrantClient:
         """
         loop = asyncio.get_event_loop()
         
+        logger.debug(f"[VECTOR_DB] Starting vector insertion to {collection_name} with {len(vectors)} records")
         try:
             # Convert to Qdrant points
             points = [
@@ -143,6 +145,7 @@ class QdrantClient:
             ]
             
             # Upsert points
+            logger.debug(f"[VECTOR_DB] Executing vector insertion: collection={collection_name}, points={len(points)}")
             await loop.run_in_executor(
                 None,
                 lambda: self.client.upsert(
@@ -151,6 +154,7 @@ class QdrantClient:
                 ),
             )
             logger.info(f"Upserted {len(vectors)} vectors to {collection_name}")
+            logger.debug(f"[VECTOR_DB] Vector insertion completed: collection={collection_name}")
             return True
         except Exception as e:
             logger.error(f"Failed to upsert vectors to {collection_name}: {e}")
@@ -181,6 +185,10 @@ class QdrantClient:
         """
         loop = asyncio.get_event_loop()
         
+        logger.debug(f"[VECTOR_DB] Starting vector search: collection={collection_name}, limit={limit}")
+        if filter_condition:
+            logger.debug(f"[VECTOR_DB] Using filter conditions: {filter_condition}")
+        
         try:
             # Search
             search_results = await loop.run_in_executor(
@@ -194,7 +202,7 @@ class QdrantClient:
             )
             
             # Convert to vector records
-            return [
+            results = [
                 VectorRecord(
                     id=str(r.id),
                     vector=query_vector,  # Note: Qdrant doesn't return vectors by default
@@ -203,6 +211,9 @@ class QdrantClient:
                 )
                 for r in search_results
             ]
+            
+            logger.debug(f"[VECTOR_DB] Search completed, found {len(results)} results")
+            return results
         except Exception as e:
             logger.error(f"Failed to search vectors in {collection_name}: {e}")
             return []
@@ -293,6 +304,9 @@ class QdrantClient:
 def get_qdrant_client() -> QdrantClient:
     """
     Get a singleton instance of the Qdrant client.
+    
+    This function uses lru_cache to ensure only one client is created.
+    It can be called directly without dependency injection.
 
     :returns: Singleton Qdrant client instance
     """

@@ -7,7 +7,6 @@ from system_guardian.services import (
     ingest,
     vector_db,
     ai,
-    analytics,
     consumers,
     config
 )
@@ -18,7 +17,6 @@ __all__ = [
     "ingest", 
     "vector_db", 
     "ai", 
-    "analytics", 
     "consumers",
     "config"
 ]

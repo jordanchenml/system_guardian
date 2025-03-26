@@ -10,10 +10,20 @@ from system_guardian.services.ai.severity_classifier import (
 from system_guardian.services.ai.incident_detector import (
     IncidentDetector,
 )
+from system_guardian.services.ai.report_generator import (
+    ReportGenerator,
+    ReportFormat,
+)
+from system_guardian.services.ai.incident_analyzer import (
+    IncidentAnalyzer,
+)
 
 __all__ = [
     "IncidentSimilarityService", 
     "IncidentEmbedding", 
     "SeverityClassifierService",
-    "IncidentDetector"
+    "IncidentDetector",
+    "ReportGenerator",
+    "ReportFormat",
+    "IncidentAnalyzer"
 ]

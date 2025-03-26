@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     environment: str = "dev"
 
     log_level: LogLevel = LogLevel.INFO
+    enable_file_logging: bool = False
+    logs_dir: Optional[str] = None
+    structured_logging: bool = False
 
     # Variables for the database
     db_host: str = "localhost"
@@ -74,6 +77,22 @@ class Settings(BaseSettings):
     openai_api_key: str = os.getenv("SYSTEM_GUARDIAN_OPENAI_API_KEY")
     openai_embedding_model: str = "text-embedding-ada-002"
     openai_completion_model: str = "gpt-3.5-turbo"
+    
+    # AI task-specific model settings
+    ai_incident_detection_model: str = "gpt-3.5-turbo"  # 用於事件檢測和分析的模型
+    ai_severity_classification_model: str = "gpt-3.5-turbo"  # 用於嚴重性分類的模型
+    ai_similarity_search_model: str = "gpt-3.5-turbo"  # 用於相似度搜索的模型
+    ai_resolution_generation_model: str = "gpt-4"  # 用於解決方案生成的模型
+    ai_root_cause_analysis_model: str = "gpt-4"  # 用於根因分析的模型
+    ai_report_generation_model: str = "gpt-4"  # 用於報告生成的模型
+    ai_trend_analysis_model: str = "gpt-3.5-turbo"  # 用於趨勢分析的模型
+    
+    # 是否允許使用高級模型 (例如 GPT-4) 
+    ai_allow_advanced_models: bool = True
+    
+    # 模型溫度設置
+    ai_default_temperature: float = 0.3  # 低溫以獲得更一致的結果
+    ai_creative_temperature: float = 0.7  # 高溫用於需要創造性的任務
 
     @property
     def db_url(self) -> URL:
@@ -109,8 +128,8 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_file=".env",
-        env_prefix="SYSTEM_GUARDIAN_",
         env_file_encoding="utf-8",
+        env_prefix="SYSTEM_GUARDIAN_",
     )
 
 

@@ -37,6 +37,7 @@ class IncidentSimilarityService:
         qdrant_client: QdrantClient,
         openai_client: Optional[AsyncOpenAI] = None,
         embedding_model: str = "text-embedding-3-small",
+        ai_engine = None,
     ):
         """
         Initialize the incident similarity service.
@@ -44,14 +45,19 @@ class IncidentSimilarityService:
         :param qdrant_client: Qdrant client for vector storage and search
         :param openai_client: OpenAI client for generating embeddings
         :param embedding_model: Model to use for embeddings
+        :param ai_engine: Optional AIEngine instance for enhanced embeddings
         """
         self.qdrant = qdrant_client
         self.openai = openai_client or AsyncOpenAI(api_key=settings.openai_api_key)
         self.embedding_model = embedding_model
+        self.ai_engine = ai_engine
         
         # Lazy import to avoid circular imports
         from system_guardian.services.ai.severity_classifier import SeverityClassifierService
-        self.severity_classifier = SeverityClassifierService(openai_client=self.openai)
+        self.severity_classifier = SeverityClassifierService(
+            openai_client=self.openai,
+            ai_engine=self.ai_engine
+        )
 
     async def ensure_collection_exists(self) -> bool:
         """
@@ -76,6 +82,13 @@ class IncidentSimilarityService:
         :returns: Vector embedding
         """
         try:
+            # If we have an AIEngine, use it for generating embeddings
+            if self.ai_engine:
+                logger.debug(f"Using AIEngine to generate embedding with model: {self.ai_engine.embedding_model}")
+                return await self.ai_engine.generate_embedding(text)
+            
+            # Fall back to standard OpenAI client
+            logger.debug(f"Using standard OpenAI client to generate embedding with model: {self.embedding_model}")
             response = await self.openai.embeddings.create(
                 model=self.embedding_model,
                 input=text,
@@ -181,6 +194,22 @@ Status: {incident.status}"""
             logger.error("Failed to ensure collection exists")
             return []
 
+        # If we have an AIEngine, use it directly for finding similar incidents
+        if self.ai_engine:
+            try:
+                logger.debug(f"Using AIEngine to find similar incidents")
+                similar_incidents = await self.ai_engine.find_similar_incidents(
+                    incident_text=query_text,
+                    limit=limit,
+                    filter_condition=filter_condition,
+                    min_similarity_score=0.5
+                )
+                return similar_incidents
+            except Exception as e:
+                logger.error(f"Error using AIEngine for similarity search: {e}")
+                # Fall back to standard search below
+                
+        # Standard embedding-based search
         # Generate embedding
         embedding = await self.generate_embedding(query_text)
         

@@ -2,8 +2,9 @@ from importlib import metadata
 
 from fastapi import FastAPI
 from fastapi.responses import UJSONResponse
+from loguru import logger
 
-from system_guardian.logging import configure_logging
+from system_guardian.logging_config import configure_logging, InterceptHandler
 from system_guardian.web.api.router import api_router
 from system_guardian.web.lifetime import register_shutdown_event, register_startup_event
 
@@ -16,7 +17,15 @@ def get_app() -> FastAPI:
 
     :return: application.
     """
+    # Configure logging first
     configure_logging()
+    
+    # Intercept standard library logging
+    interceptor = InterceptHandler()
+    interceptor.intercept_all_loggers()
+    
+    logger.info("Starting System Guardian application")
+    
     app = FastAPI(
         title="system_guardian",
         version=metadata.version("system_guardian"),
@@ -32,5 +41,7 @@ def get_app() -> FastAPI:
 
     # Main router for the API.
     app.include_router(router=api_router, prefix="/api")
+    
+    logger.info("Application startup complete")
 
     return app

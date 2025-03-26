@@ -15,16 +15,19 @@ class SeverityClassifierService:
         self,
         openai_client: Optional[AsyncOpenAI] = None,
         model: str = "gpt-3.5-turbo",
+        ai_engine = None,
     ):
         """
         Initialize the severity classifier service.
         
         :param openai_client: OpenAI client instance
         :param model: OpenAI model to use for classification
+        :param ai_engine: Optional AIEngine instance for enhanced classification
         """
         self.openai_client = openai_client or AsyncOpenAI(api_key=settings.openai_api_key)
         self.model = model
         self.severity_levels = ["low", "medium", "high", "critical"]
+        self.ai_engine = ai_engine
     
     async def classify_severity(
         self, 
@@ -51,7 +54,29 @@ class SeverityClassifierService:
         )
         
         try:
-            # Get classification from OpenAI
+            # If we have an AIEngine available, use it for classification
+            if self.ai_engine:
+                logger.debug(f"Using AIEngine for severity classification with model: {self.ai_engine.llm_model}")
+                
+                response = await self.ai_engine.llm.chat.completions.create(
+                    model=self.ai_engine.llm_model,
+                    messages=[
+                        {"role": "system", "content": "You are an incident severity classifier. "
+                                                    "Analyze the incident details and classify its severity "
+                                                    "as one of: low, medium, high, critical."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,  # Lower temperature for more consistent results
+                    max_tokens=50     # We only need a short response
+                )
+                
+                # Extract and validate severity from response
+                severity = self._extract_severity_from_response(response.choices[0].message.content)
+                logger.info(f"AIEngine classified incident severity as {severity}")
+                return severity
+            
+            # Fall back to standard OpenAI client if no AIEngine
+            logger.debug(f"Using standard OpenAI client for severity classification with model: {self.model}")
             response = await self.openai_client.chat.completions.create(
                 model=self.model,
                 messages=[

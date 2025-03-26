@@ -1,6 +1,7 @@
-from typing import Optional
+"""GitHub webhook handler views."""
 import json
 from urllib.parse import parse_qs
+from typing import Optional
 
 from fastapi import APIRouter, Header, Request, Depends, BackgroundTasks
 from loguru import logger
