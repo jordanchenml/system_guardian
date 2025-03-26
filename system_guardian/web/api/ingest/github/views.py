@@ -1,4 +1,5 @@
 """GitHub webhook handler views."""
+
 import json
 from urllib.parse import parse_qs
 from typing import Optional
@@ -42,11 +43,11 @@ async def process_github_webhook(
     """
     # Log the received event type for debugging purposes
     logger.info(f"Received GitHub event: {x_github_event}")
-    
+
     try:
         # Determine the request content type
         content_type = request.headers.get("content-type", "")
-        
+
         # Process the request based on content type
         if "application/json" in content_type:
             # Direct JSON parsing for JSON content type
@@ -54,29 +55,31 @@ async def process_github_webhook(
         else:
             # Handle form data (application/x-www-form-urlencoded)
             form_data = await request.body()
-            form_data_str = form_data.decode('utf-8')
-            
+            form_data_str = form_data.decode("utf-8")
+
             # Parse form data
             parsed_data = parse_qs(form_data_str)
-            
+
             # GitHub webhooks typically include JSON data in the 'payload' field
-            if 'payload' in parsed_data:
-                payload_json = parsed_data['payload'][0]
+            if "payload" in parsed_data:
+                payload_json = parsed_data["payload"][0]
                 body = json.loads(payload_json)
             else:
                 # If no payload field, try parsing the entire body as JSON
                 body = json.loads(form_data_str)
-        
+
         # Log the parsed payload for debugging
         logger.debug(f"Successfully parsed GitHub payload: {body}")
-        
+
         # Create standardized event message
         event_message = StandardEventMessage(
             source="github",
             event_type=x_github_event or "unknown",
+            event_id=str(body.get("id", "unknown")),
+            timestamp=body.get("timestamp", ""),
             raw_payload=body,
         )
-        
+
         # Forward to message queues in the background
         # This allows us to respond to the webhook quickly without waiting for message queue processing
         background_tasks.add_task(
@@ -85,10 +88,10 @@ async def process_github_webhook(
             kafka_producer=kafka_producer,
             rmq_channel_pool=rmq_channel_pool,
         )
-        
+
         # Return the processed message
         return Message(message=body)
-        
+
     except json.JSONDecodeError as e:
         # Handle JSON parsing errors
         error_msg = f"Invalid JSON in webhook payload: {str(e)}"

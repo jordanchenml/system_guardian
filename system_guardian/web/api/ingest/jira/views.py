@@ -40,21 +40,23 @@ async def process_jira_webhook(
     :returns: message indicating successful processing
     """
     logger.info(f"Received Jira event: {x_jira_event}")
-    
+
     try:
         # Parse the request body as JSON
         body = await request.json()
         logger.debug(f"Received Jira webhook body: {body}")
 
         event_type = x_jira_event or extract_event_type_from_body(body) or "unknown"
-        
+
         # Create standardized event message
         event_message = StandardEventMessage(
             source="jira",
             event_type=event_type.split(":")[-1],
+            event_id=str(body.get("id", "unknown")),
+            timestamp=body.get("timestamp", ""),
             raw_payload=body,
         )
-        
+
         # Forward to message queues in the background
         # This allows us to respond to the webhook quickly without waiting for message queue processing
         background_tasks.add_task(
@@ -63,7 +65,7 @@ async def process_jira_webhook(
             kafka_producer=kafka_producer,
             rmq_channel_pool=rmq_channel_pool,
         )
-        
+
         return Message(message=body)
     except json.JSONDecodeError as e:
         # Handle JSON parsing errors
@@ -80,7 +82,7 @@ async def process_jira_webhook(
 def extract_event_type_from_body(body: Dict[str, Any]) -> Optional[str]:
     """
     Extract the event type from the Jira webhook body if not provided in the header.
-    
+
     :param body: The parsed JSON body of the Jira webhook
     :returns: The extracted event type or None if not found
     """
@@ -89,7 +91,7 @@ def extract_event_type_from_body(body: Dict[str, Any]) -> Optional[str]:
         return body["webhookEvent"]
     if "issue_event_type_name" in body:
         return body["issue_event_type_name"]
-    
+
     # Add more extraction logic as needed for different Jira webhook formats
-    
+
     return None
