@@ -115,13 +115,13 @@ async def generate_resolution(
         # Transform the result into the expected response format
         logger.info(f"Successfully generated resolution for incident ID: {request.incident_id} with confidence: {resolution_data['confidence']:.2f}")
         return GenerateResolutionResponse(
-            id=resolution_data["id"],
+            id=resolution_data["resolution_id"],
             incident_id=resolution_data["incident_id"],
-            suggestion=resolution_data["suggestion"],
+            suggestion=resolution_data["resolution_text"],
             confidence=resolution_data["confidence"],
-            is_applied=resolution_data["is_applied"],
+            is_applied=resolution_data["is_applied"] if "is_applied" in resolution_data else False,
             generated_at=resolution_data["generated_at"],
-            feedback_score=resolution_data["feedback_score"]
+            feedback_score=resolution_data["feedback_score"] if "feedback_score" in resolution_data else None
         )
     except ValueError as e:
         # Handle specific validation errors

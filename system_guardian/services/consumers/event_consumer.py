@@ -17,7 +17,7 @@ from system_guardian.db.models.incidents import Event, Incident
 from system_guardian.settings import settings
 from system_guardian.services.ai.incident_detector import IncidentDetector
 from system_guardian.services.config import ConfigManager
-from system_guardian.services.ai.severity_classifier import SeverityClassifierService
+from system_guardian.services.ai.severity_classifier import SeverityClassifier
 from system_guardian.services.ingest.message_publisher import MessagePublisher
 
 
@@ -60,7 +60,7 @@ class EventConsumer:
         
         # Initialize config manager and severity classifier
         self.config_manager = ConfigManager()
-        self.severity_classifier = SeverityClassifierService()
+        self.severity_classifier = SeverityClassifier()
         
         # Initialize incident detector with new parameters
         self.incident_detector = IncidentDetector(

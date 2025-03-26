@@ -12,9 +12,12 @@ from system_guardian.services.kafka.lifetime import init_kafka, shutdown_kafka
 from system_guardian.services.rabbit.lifetime import init_rabbit, shutdown_rabbit
 from system_guardian.services.consumers.event_consumer import EventConsumer
 from system_guardian.services.ai.engine import AIEngine
-from system_guardian.services.vector_db.dependencies import get_qdrant_client
+from system_guardian.services.vector_db.qdrant_client import get_qdrant_client
 from system_guardian.settings import settings
 from system_guardian.logging_config import configure_sqlalchemy_logging
+from system_guardian.services.vector_db.dependencies import (
+    initialize_vector_collections,
+)
 
 
 def _setup_db(app: FastAPI) -> None:  # pragma: no cover
@@ -27,14 +30,17 @@ def _setup_db(app: FastAPI) -> None:  # pragma: no cover
 
     :param app: fastAPI application.
     """
-    # 確保 SQLAlchemy 日誌被禁用
     configure_sqlalchemy_logging()
-    for logger_name in ['sqlalchemy', 'sqlalchemy.engine', 'sqlalchemy.pool', 'sqlalchemy.orm']:
+    for logger_name in [
+        "sqlalchemy",
+        "sqlalchemy.engine",
+        "sqlalchemy.pool",
+        "sqlalchemy.orm",
+    ]:
         logging.getLogger(logger_name).setLevel(logging.CRITICAL + 10)
         logging.getLogger(logger_name).disabled = True
         logging.getLogger(logger_name).propagate = False
-    
-    # 創建引擎時明確禁用 echo
+
     engine = create_async_engine(str(settings.db_url), echo=False)
     session_factory = async_sessionmaker(
         engine,
@@ -55,22 +61,22 @@ def _setup_ai_engine(app: FastAPI) -> None:  # pragma: no cover
     """
     # Initialize OpenAI client
     openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
-    
+
     # Get Qdrant client
     qdrant_client = get_qdrant_client()
-    
+
     # Initialize Qdrant collections
     asyncio.create_task(_initialize_qdrant_collections(qdrant_client))
-    
+
     # Initialize AI engine
     ai_engine = AIEngine(
         vector_db_client=qdrant_client,
         llm_client=openai_client,
         embedding_model=settings.openai_embedding_model,
         llm_model=settings.openai_completion_model,
-        enable_metrics=True
+        enable_metrics=True,
     )
-    
+
     # Store in app state
     app.state.ai_engine = ai_engine
 
@@ -78,34 +84,54 @@ def _setup_ai_engine(app: FastAPI) -> None:  # pragma: no cover
 async def _initialize_qdrant_collections(qdrant_client) -> None:  # pragma: no cover
     """
     Initialize Qdrant collections required by the application.
-    
+
     :param qdrant_client: Qdrant client instance
     """
-    from system_guardian.services.ai.incident_similarity import IncidentSimilarityService
-    
     logging.getLogger("system_guardian").info("Initializing Qdrant collections")
-    
-    # Initialize the incident vectors collection
+
+    # Standard collection names used in the application
+    COLLECTIONS = {
+        "system_knowledge": 1536,  # OpenAI embedding dimension
+        "incidents": 1536,  # OpenAI embedding dimension
+    }
+
     try:
-        # Create a temporary IncidentSimilarityService to ensure collection exists
-        similarity_service = IncidentSimilarityService(qdrant_client=qdrant_client)
-        await similarity_service.ensure_collection_exists()
-        logging.getLogger("system_guardian").info(f"Collection '{similarity_service.COLLECTION_NAME}' initialized")
+        # Initialize all required collections
+        for collection_name, vector_size in COLLECTIONS.items():
+            try:
+                await qdrant_client.ensure_collection_exists(
+                    collection_name=collection_name,
+                    vector_size=vector_size,
+                    distance="Cosine",
+                )
+                logging.getLogger("system_guardian").info(
+                    f"Collection {collection_name} initialized"
+                )
+            except Exception as e:
+                logging.getLogger("system_guardian").error(
+                    f"Failed to initialize collection {collection_name}: {e}"
+                )
+
+        logging.getLogger("system_guardian").info(
+            "Vector collections initialization completed"
+        )
     except Exception as e:
-        logging.getLogger("system_guardian").error(f"Error initializing Qdrant collections: {e}")
+        logging.getLogger("system_guardian").error(
+            f"Error initializing Qdrant collections: {e}"
+        )
 
 
 async def get_ai_engine():
     """
     Get AI engine dependency.
-    
+
     :return: AI engine instance
     """
     from fastapi import Request
-    
+
     def _get_ai_engine(request: Request):
         return request.app.state.ai_engine
-        
+
     return _get_ai_engine
 
 
@@ -117,15 +143,15 @@ async def _create_tables() -> None:  # pragma: no cover
 async def _start_event_consumer(app: FastAPI) -> None:  # pragma: no cover
     """
     Start the event consumer.
-    
+
     :param app: fastAPI application.
     """
     # Create event consumer
     event_consumer = EventConsumer(app.state.db_session_factory)
-    
+
     # Store it in app state for later reference
     app.state.event_consumer = event_consumer
-    
+
     # Start it as a background task
     app.state.event_consumer_task = asyncio.create_task(event_consumer.start())
 
@@ -133,13 +159,13 @@ async def _start_event_consumer(app: FastAPI) -> None:  # pragma: no cover
 async def _stop_event_consumer(app: FastAPI) -> None:  # pragma: no cover
     """
     Stop the event consumer.
-    
+
     :param app: fastAPI application.
     """
     if hasattr(app.state, "event_consumer"):
         # Signal consumer to stop
         await app.state.event_consumer.stop()
-        
+
         # Wait for the task to complete
         if hasattr(app.state, "event_consumer_task"):
             try:

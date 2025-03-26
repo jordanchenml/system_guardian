@@ -1,4 +1,5 @@
 """Incident similarity service using vector embeddings."""
+
 import hashlib
 import json
 from typing import Any, Dict, List, Optional, Tuple
@@ -7,8 +8,10 @@ from loguru import logger
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from system_guardian.services.vector_db.qdrant_client import QdrantClient, VectorRecord
+# 使用轉發導入避免循環導入
+from system_guardian.services.vector_db import types
 from system_guardian.settings import settings
+from system_guardian.services.ai.severity_classifier import SeverityClassifier
 
 
 class IncidentEmbedding(BaseModel):
@@ -33,11 +36,11 @@ class IncidentSimilarityService:
     VECTOR_SIZE = 1536
 
     def __init__(
-        self, 
-        qdrant_client: QdrantClient,
+        self,
+        qdrant_client,  # 移除類型標注來避免循環導入
         openai_client: Optional[AsyncOpenAI] = None,
         embedding_model: str = "text-embedding-3-small",
-        ai_engine = None,
+        ai_engine=None,
     ):
         """
         Initialize the incident similarity service.
@@ -51,12 +54,10 @@ class IncidentSimilarityService:
         self.openai = openai_client or AsyncOpenAI(api_key=settings.openai_api_key)
         self.embedding_model = embedding_model
         self.ai_engine = ai_engine
-        
+
         # Lazy import to avoid circular imports
-        from system_guardian.services.ai.severity_classifier import SeverityClassifierService
-        self.severity_classifier = SeverityClassifierService(
-            openai_client=self.openai,
-            ai_engine=self.ai_engine
+        self.severity_classifier = SeverityClassifier(
+            openai_client=self.openai, ai_engine=self.ai_engine
         )
 
     async def ensure_collection_exists(self) -> bool:
@@ -84,11 +85,15 @@ class IncidentSimilarityService:
         try:
             # If we have an AIEngine, use it for generating embeddings
             if self.ai_engine:
-                logger.debug(f"Using AIEngine to generate embedding with model: {self.ai_engine.embedding_model}")
+                logger.debug(
+                    f"Using AIEngine to generate embedding with model: {self.ai_engine.embedding_model}"
+                )
                 return await self.ai_engine.generate_embedding(text)
-            
+
             # Fall back to standard OpenAI client
-            logger.debug(f"Using standard OpenAI client to generate embedding with model: {self.embedding_model}")
+            logger.debug(
+                f"Using standard OpenAI client to generate embedding with model: {self.embedding_model}"
+            )
             response = await self.openai.embeddings.create(
                 model=self.embedding_model,
                 input=text,
@@ -132,17 +137,25 @@ Status: {incident.status}"""
         if not await self.ensure_collection_exists():
             logger.error("Failed to ensure collection exists")
             return False
-            
+
         # Auto-classify severity if it's not provided or empty
-        if not incident.severity or incident.severity.lower() == "none" or incident.severity.strip() == "":
+        if (
+            not incident.severity
+            or incident.severity.lower() == "none"
+            or incident.severity.strip() == ""
+        ):
             try:
-                logger.info(f"Auto-classifying severity for incident {incident.incident_id}")
+                logger.info(
+                    f"Auto-classifying severity for incident {incident.incident_id}"
+                )
                 incident.severity = await self.severity_classifier.classify_severity(
                     incident_title=incident.title,
                     incident_description=incident.description,
-                    source=incident.source
+                    source=incident.source,
                 )
-                logger.info(f"Classified incident {incident.incident_id} with severity {incident.severity}")
+                logger.info(
+                    f"Classified incident {incident.incident_id} with severity {incident.severity}"
+                )
             except Exception as e:
                 logger.error(f"Failed to auto-classify severity: {e}")
                 # Default to medium if classification fails
@@ -150,12 +163,12 @@ Status: {incident.status}"""
 
         # Generate text for embedding
         incident_text = self._generate_incident_text(incident)
-        
+
         # Generate embedding
         embedding = await self.generate_embedding(incident_text)
-        
+
         # Create vector record
-        vector_record = VectorRecord(
+        vector_record = types.VectorRecord(
             id=self._generate_id(incident.incident_id),
             vector=embedding,
             metadata={
@@ -168,7 +181,7 @@ Status: {incident.status}"""
                 "created_at": incident.created_at,
             },
         )
-        
+
         # Upsert vector
         return await self.qdrant.upsert_vectors(
             collection_name=self.COLLECTION_NAME,
@@ -176,8 +189,8 @@ Status: {incident.status}"""
         )
 
     async def find_similar_incidents(
-        self, 
-        query_text: str, 
+        self,
+        query_text: str,
         limit: int = 5,
         filter_condition: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
@@ -202,17 +215,17 @@ Status: {incident.status}"""
                     incident_text=query_text,
                     limit=limit,
                     filter_condition=filter_condition,
-                    min_similarity_score=0.5
+                    min_similarity_score=0.5,
                 )
                 return similar_incidents
             except Exception as e:
                 logger.error(f"Error using AIEngine for similarity search: {e}")
                 # Fall back to standard search below
-                
+
         # Standard embedding-based search
         # Generate embedding
         embedding = await self.generate_embedding(query_text)
-        
+
         # Search for similar vectors
         results = await self.qdrant.search_vectors(
             collection_name=self.COLLECTION_NAME,
@@ -220,7 +233,7 @@ Status: {incident.status}"""
             limit=limit,
             filter_condition=filter_condition,
         )
-        
+
         # Convert to result format
         return [
             {
@@ -246,4 +259,4 @@ Status: {incident.status}"""
         return await self.qdrant.delete_vectors(
             collection_name=self.COLLECTION_NAME,
             vector_ids=[self._generate_id(incident_id)],
-        ) 
+        )

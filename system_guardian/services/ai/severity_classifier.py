@@ -8,7 +8,7 @@ from loguru import logger
 from system_guardian.db.models.incidents import Incident
 from system_guardian.settings import settings
 
-class SeverityClassifierService:
+class SeverityClassifier:
     """Service for classifying incident severity using AI."""
     
     def __init__(
