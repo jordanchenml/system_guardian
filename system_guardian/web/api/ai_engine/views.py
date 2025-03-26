@@ -3,16 +3,17 @@ import json
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status, Body
+from fastapi import APIRouter, Depends, HTTPException, status, Body, Path
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from system_guardian.services.vector_db.qdrant_client import QdrantClient
 from system_guardian.services.vector_db.dependencies import get_qdrant_dependency
 from system_guardian.services.ai.engine import AIEngine
+from system_guardian.services.ai.resolution_generator import ResolutionGenerator
 from system_guardian.services.ai.report_generator import ReportGenerator, ReportFormat
 from system_guardian.services.ai.incident_analyzer import IncidentAnalyzer
-from system_guardian.db.models.incidents import Incident
+from system_guardian.db.models.incidents import Incident, Resolution
 from system_guardian.db.dependencies import get_db_session
 from sqlalchemy.future import select
 from openai import AsyncOpenAI
@@ -21,6 +22,10 @@ from system_guardian.settings import settings
 from .schema import (
     GenerateResolutionRequest,
     GenerateResolutionResponse,
+    ApplyResolutionRequest,
+    ApplyResolutionResponse,
+    ResolutionFeedbackRequest,
+    ResolutionFeedbackResponse,
     RelatedIncidentsRequest,
     RelatedIncidentsResponse,
     RelatedIncidentItem,
@@ -68,9 +73,12 @@ async def generate_resolution(
     ai_engine = AIEngine(
         vector_db_client=qdrant_client,
         llm_client=openai_client,
-        llm_model=request.model or "gpt-3.5-turbo",  # Use requested model if provided
+        llm_model=request.model or settings.openai_completion_model,
         enable_metrics=True
     )
+    
+    # Initialize resolution generator
+    resolution_generator = ResolutionGenerator(ai_engine=ai_engine)
     
     try:
         # Check if incident exists
@@ -84,23 +92,36 @@ async def generate_resolution(
                 detail=f"Incident with ID {request.incident_id} not found",
             )
         
-        # Generate resolution using AIEngine with the session
-        logger.debug(f"Calling AIEngine for incident ID: {request.incident_id}, model: {request.model}")
-        resolution_result = await ai_engine.generate_resolution(
+        # Generate resolution using ResolutionGenerator with the session
+        logger.debug(f"Calling ResolutionGenerator for incident ID: {request.incident_id}, model: {request.model}")
+        resolution_data = await resolution_generator.generate_resolution(
             incident_id=request.incident_id,
             session=db_session,
+            force_regenerate=request.force_regenerate,
             model=request.model,
             temperature=request.temperature,
-            store_result=True
         )
         
+        if not resolution_data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to generate resolution for incident #{request.incident_id}",
+            )
+        
+        # Ensure datetime is converted to string
+        if isinstance(resolution_data["generated_at"], datetime):
+            resolution_data["generated_at"] = resolution_data["generated_at"].isoformat()
+        
         # Transform the result into the expected response format
-        logger.info(f"Successfully generated resolution for incident ID: {request.incident_id} with confidence: {resolution_result['confidence']:.2f}")
+        logger.info(f"Successfully generated resolution for incident ID: {request.incident_id} with confidence: {resolution_data['confidence']:.2f}")
         return GenerateResolutionResponse(
-            incident_id=request.incident_id,
-            resolution=resolution_result["resolution_text"],
-            confidence=resolution_result["confidence"],
-            generation_time=resolution_result["generated_at"]
+            id=resolution_data["id"],
+            incident_id=resolution_data["incident_id"],
+            suggestion=resolution_data["suggestion"],
+            confidence=resolution_data["confidence"],
+            is_applied=resolution_data["is_applied"],
+            generated_at=resolution_data["generated_at"],
+            feedback_score=resolution_data["feedback_score"]
         )
     except ValueError as e:
         # Handle specific validation errors
@@ -118,6 +139,170 @@ async def generate_resolution(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate resolution: {str(e)}",
+        )
+
+
+@router.post("/resolutions/{resolution_id}/apply", response_model=ApplyResolutionResponse)
+async def apply_resolution(
+    resolution_id: int = Path(..., description="ID of the resolution to apply"),
+    request: Optional[ApplyResolutionRequest] = Body(None),
+    db_session: AsyncSession = Depends(get_db_session),
+) -> ApplyResolutionResponse:
+    """
+    Mark a resolution as applied.
+    
+    :param resolution_id: ID of the resolution
+    :param request: Request containing additional notes
+    :param db_session: Database session
+    :returns: Updated resolution status
+    """
+    logger.info(f"Received apply resolution request for resolution ID: {resolution_id}")
+    
+    try:
+        # Get the resolution from the database
+        stmt = select(Resolution).where(Resolution.id == resolution_id)
+        result = await db_session.execute(stmt)
+        resolution = result.scalar_one_or_none()
+        
+        if not resolution:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Resolution with ID {resolution_id} not found",
+            )
+        
+        # Update the resolution
+        resolution.is_applied = True
+        applied_at = datetime.utcnow()
+        
+        # Commit the changes
+        await db_session.commit()
+        
+        # Return the response
+        return ApplyResolutionResponse(
+            resolution_id=resolution.id,
+            incident_id=resolution.incident_id,
+            is_applied=resolution.is_applied,
+            applied_at=applied_at.isoformat()
+        )
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to apply resolution {resolution_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to apply resolution: {str(e)}",
+        )
+
+
+@router.post("/resolutions/{resolution_id}/feedback", response_model=ResolutionFeedbackResponse)
+async def provide_resolution_feedback(
+    resolution_id: int = Path(..., description="ID of the resolution"),
+    request: ResolutionFeedbackRequest = Body(...),
+    db_session: AsyncSession = Depends(get_db_session),
+) -> ResolutionFeedbackResponse:
+    """
+    Provide feedback on a resolution.
+    
+    :param resolution_id: ID of the resolution
+    :param request: Feedback request
+    :param db_session: Database session
+    :returns: Feedback submission status
+    """
+    logger.info(f"Received feedback for resolution ID: {resolution_id}")
+    
+    try:
+        # Get the resolution from the database
+        stmt = select(Resolution).where(Resolution.id == resolution_id)
+        result = await db_session.execute(stmt)
+        resolution = result.scalar_one_or_none()
+        
+        if not resolution:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Resolution with ID {resolution_id} not found",
+            )
+        
+        # Update the feedback score
+        resolution.feedback_score = request.feedback_score
+        
+        # Commit the changes
+        await db_session.commit()
+        
+        # Return the response
+        return ResolutionFeedbackResponse(
+            resolution_id=resolution.id,
+            incident_id=resolution.incident_id,
+            feedback_score=resolution.feedback_score,
+            success=True
+        )
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to submit feedback for resolution {resolution_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to submit feedback: {str(e)}",
+        )
+
+
+@router.get("/resolutions/incident/{incident_id}", response_model=List[GenerateResolutionResponse])
+async def get_incident_resolutions(
+    incident_id: int = Path(..., description="ID of the incident"),
+    db_session: AsyncSession = Depends(get_db_session),
+) -> List[GenerateResolutionResponse]:
+    """
+    Get all resolutions for an incident.
+    
+    :param incident_id: ID of the incident
+    :param db_session: Database session
+    :returns: List of resolutions for the incident
+    """
+    logger.info(f"Received request for resolutions of incident ID: {incident_id}")
+    
+    try:
+        # Check if incident exists
+        incident_query = select(Incident).where(Incident.id == incident_id)
+        result = await db_session.execute(incident_query)
+        incident = result.scalars().first()
+        
+        if not incident:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Incident with ID {incident_id} not found",
+            )
+        
+        # Get all resolutions for the incident
+        stmt = select(Resolution).where(Resolution.incident_id == incident_id)
+        result = await db_session.execute(stmt)
+        resolutions = result.scalars().all()
+        
+        # Convert to response format
+        response_items = []
+        for res in resolutions:
+            generated_at = res.generated_at.isoformat() if isinstance(res.generated_at, datetime) else res.generated_at
+            response_items.append(
+                GenerateResolutionResponse(
+                    id=res.id,
+                    incident_id=res.incident_id,
+                    suggestion=res.suggestion,
+                    confidence=res.confidence,
+                    is_applied=res.is_applied,
+                    generated_at=generated_at,
+                    feedback_score=res.feedback_score
+                )
+            )
+        
+        return response_items
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to get resolutions for incident {incident_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get resolutions: {str(e)}",
         )
 
 

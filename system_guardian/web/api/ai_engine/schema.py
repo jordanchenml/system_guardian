@@ -7,6 +7,7 @@ class GenerateResolutionRequest(BaseModel):
     """Request parameters for resolution generation."""
     
     incident_id: int = Field(..., description="ID of the incident to generate a resolution for")
+    force_regenerate: bool = Field(False, description="Whether to force regeneration even if a resolution exists")
     model: Optional[str] = Field(None, description="Optional LLM model override")
     temperature: float = Field(0.3, description="Temperature for the generation (0.0-1.0)", ge=0.0, le=1.0)
 
@@ -14,10 +15,46 @@ class GenerateResolutionRequest(BaseModel):
 class GenerateResolutionResponse(BaseModel):
     """Response model for resolution generation."""
     
+    id: int = Field(..., description="ID of the generated resolution")
     incident_id: int = Field(..., description="ID of the incident")
-    resolution: str = Field(..., description="Generated resolution suggestion")
+    suggestion: str = Field(..., description="Generated resolution suggestion")
     confidence: float = Field(..., description="Confidence score for the resolution (0.0-1.0)")
-    generation_time: str = Field(..., description="ISO timestamp of when the resolution was generated")
+    is_applied: bool = Field(False, description="Whether the resolution has been applied")
+    generated_at: str = Field(..., description="ISO timestamp of when the resolution was generated")
+    feedback_score: Optional[int] = Field(None, description="User feedback score if provided")
+
+
+class ApplyResolutionRequest(BaseModel):
+    """Request to mark a resolution as applied."""
+    
+    resolution_id: int = Field(..., description="ID of the resolution to mark as applied")
+    notes: Optional[str] = Field(None, description="Optional notes about the application")
+
+
+class ApplyResolutionResponse(BaseModel):
+    """Response for marking a resolution as applied."""
+    
+    resolution_id: int = Field(..., description="ID of the resolution")
+    incident_id: int = Field(..., description="ID of the incident")
+    is_applied: bool = Field(..., description="Whether the resolution is now applied")
+    applied_at: str = Field(..., description="ISO timestamp of when the resolution was marked as applied")
+
+
+class ResolutionFeedbackRequest(BaseModel):
+    """Request to provide feedback on a resolution."""
+    
+    resolution_id: int = Field(..., description="ID of the resolution")
+    feedback_score: int = Field(..., description="Feedback score (1-5)", ge=1, le=5)
+    comments: Optional[str] = Field(None, description="Optional feedback comments")
+
+
+class ResolutionFeedbackResponse(BaseModel):
+    """Response after providing feedback on a resolution."""
+    
+    resolution_id: int = Field(..., description="ID of the resolution")
+    incident_id: int = Field(..., description="ID of the incident")
+    feedback_score: int = Field(..., description="Feedback score that was provided")
+    success: bool = Field(..., description="Whether the feedback was successfully recorded")
 
 
 class RelatedIncidentsRequest(BaseModel):

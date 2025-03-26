@@ -79,6 +79,11 @@ class AIEngine:
         :param text: Text to generate embedding for
         :return: Vector embedding as list of floats
         """
+        # Ensure text is a string
+        if not isinstance(text, str):
+            logger.warning(f"Input text is not a string but {type(text)}, converting to string")
+            text = str(text)
+            
         # Check if we have it in cache (using a cache key)
         cache_key = text.strip()[:1000]  # Limit key size
         
@@ -141,22 +146,44 @@ class AIEngine:
         self._track_metric("vector_search_calls")
         
         try:
+            # Ensure incident_text is a string
+            if not isinstance(incident_text, str):
+                logger.warning(f"incident_text is not a string but {type(incident_text)}, converting to string")
+                incident_text = str(incident_text)
+                
             # Generate embedding for the query text
             embedding = await self.generate_embedding(incident_text)
             
             # Search the vector database
             logger.debug(f"Searching vector database with limit: {limit*2}, filter: {filter_condition}")
-            results = await self.vector_db.search(
-                embedding, 
+            results = await self.vector_db.search_vectors(
+                collection_name="incident_vectors",
+                query_vector=embedding, 
                 limit=limit * 2,  # Request more than needed to account for filtering
                 filter_condition=filter_condition
             )
             
-            # Filter by similarity score
-            filtered_results = [
-                incident for incident in results 
-                if incident.get("similarity_score", 0) >= min_similarity_score
-            ]
+            # Filter by similarity score - handle VectorRecord objects properly
+            filtered_results = []
+            for record in results:
+                # Check if we have a VectorRecord object with a score attribute
+                if hasattr(record, 'score') and record.score is not None:
+                    if record.score >= min_similarity_score:
+                        # Convert to dictionary format expected by other functions
+                        incident_dict = {
+                            "incident_id": record.metadata.get("incident_id", ""),
+                            "title": record.metadata.get("title", ""),
+                            "description": record.metadata.get("description", ""),
+                            "severity": record.metadata.get("severity", ""),
+                            "status": record.metadata.get("status", ""),
+                            "source": record.metadata.get("source", ""),
+                            "created_at": record.metadata.get("created_at", ""),
+                            "similarity_score": record.score
+                        }
+                        filtered_results.append(incident_dict)
+                # Fallback for legacy dictionary format
+                elif isinstance(record, dict) and record.get("similarity_score", 0) >= min_similarity_score:
+                    filtered_results.append(record)
             
             logger.info(f"Found {len(filtered_results)} similar incidents with similarity score >= {min_similarity_score}")
             # Return up to the requested limit
@@ -229,38 +256,27 @@ class AIEngine:
             return None
     
     # Helper method to generate query text from incident
-    def _generate_query_text_from_incident(self, incident_data: Dict) -> str:
+    async def _generate_query_text_from_incident(self, incident_data: Dict) -> str:
         """
-        Generate query text from incident data for similarity search.
+        Generate query text from incident data for vector search.
         
-        :param incident_data: Dictionary with incident details
-        :return: Query text for similarity search
+        :param incident_data: Incident data
+        :return: Query text
         """
-        if not incident_data:
-            return ""
+        # Create a text representation from the incident title and description
+        query_text = f"{incident_data.get('title', '')}"
+        if incident_data.get('description'):
+            query_text += f" {incident_data.get('description', '')}"
             
-        query_text = f"Incident: {incident_data['title']}\n"
-        query_text += f"Description: {incident_data['description']}\n"
-        query_text += f"Severity: {incident_data['severity']}\n"
-        query_text += f"Source: {incident_data['source']}\n"
-        
-        # Add event information
-        events = incident_data.get("events", [])
-        for i, event in enumerate(events[:3]):  # Limit to first 3 events
-            query_text += f"\nEvent {i+1}: {event['source']}/{event['event_type']}\n"
+        # Add event summaries if available
+        for event in incident_data.get('events', [])[:3]:  # Just use first 3 events
+            if 'summary' in event:
+                query_text += f" {event['summary']}"
+                
+        # Truncate if too long
+        if len(query_text) > 1000:
+            query_text = query_text[:1000]
             
-            # Extract relevant content fields
-            if isinstance(event.get('content'), dict):
-                content = event['content']
-                for key in ['title', 'description', 'message', 'text']:
-                    if key in content:
-                        value = content[key]
-                        if isinstance(value, str):
-                            query_text += f"{key}: {value[:100]}...\n"
-                        elif value is not None:
-                            query_text += f"{key}: {json.dumps(value)[:100]}...\n"
-        
-        logger.debug(f"Generated query text from incident: {len(query_text)} characters")
         return query_text
         
     async def find_related_incidents(
@@ -307,7 +323,7 @@ class AIEngine:
                 
                 # Create query text if not provided
                 if not final_query_text:
-                    final_query_text = self._generate_query_text_from_incident(incident_data)
+                    final_query_text = await self._generate_query_text_from_incident(incident_data)
             
             if not final_query_text:
                 raise ValueError("Either incident_id or query_text must be provided")
@@ -573,228 +589,72 @@ class AIEngine:
         :param store_result: Whether to store the resolution in the database
         :return: Dictionary with resolution text, confidence, and metadata
         """
-        from system_guardian.db.models.incidents import Incident, Event, Resolution
-        
-        start_time = time.time()
-        self._track_metric("llm_calls")
         logger.info(f"Generating resolution for incident ID: {incident_id}")
         
-        try:
-            # Get incident details using the provided session
-            incident_query = select(Incident).where(Incident.id == incident_id)
-            result = await session.execute(incident_query)
-            incident = result.scalars().first()
+        result = await self.generate_resolution_with_generator(
+            incident_id=incident_id,
+            session=session,
+            force_regenerate=True,  # Always generate a new resolution when this method is called
+            model=model,
+            temperature=temperature,
+        )
+        
+        # If store_result is False, we need to handle it here since generate_resolution_with_generator
+        # always stores the result by default
+        if not store_result and result:
+            # Find and delete the resolution that was just created
+            from system_guardian.db.models.incidents import Resolution
             
-            if not incident:
-                logger.warning(f"Incident with ID {incident_id} not found")
-                raise ValueError(f"Incident with ID {incident_id} not found")
-            
-            # Get related events for this incident
-            events_query = select(Event).where(Event.incident_id == incident_id)
-            events_result = await session.execute(events_query)
-            related_events = events_result.scalars().all()
-            logger.debug(f"Found {len(related_events)} events for incident {incident_id}")
-            
-            # Format incident and events information
-            incident_text = self._format_incident_for_resolution_prompt(incident, related_events)
-            
-            # Find similar past resolved incidents
-            logger.debug("Searching for similar resolved incidents")
-            similar_incidents = await self.find_similar_incidents(
-                incident_text, 
-                limit=3,
-                filter_condition={"must": [{"key": "status", "match": {"any": ["resolved"]}}]},
-                min_similarity_score=0.6
-            )
-            
-            # Format similar incidents information
-            similar_incidents_text = self._format_similar_incidents_for_resolution_prompt(similar_incidents)
-            
-            # Generate resolution suggestion using LLM
-            prompt = self._create_resolution_prompt(incident_text, similar_incidents_text)
-            
-            # Use the specified model or fall back to default
-            model_to_use = model or self.llm_model
-            
-            # Make sure we have a response format
-            logger.debug(f"Calling LLM with model {model_to_use} to generate resolution")
-            response = await self.llm.chat.completions.create(
-                model=model_to_use,
-                messages=[
-                    {"role": "system", "content": "You are an expert IT incident resolver. Provide concise, actionable resolution steps."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=temperature,
-                max_tokens=800
-            )
-            
-            resolution_text = response.choices[0].message.content
-            
-            # Calculate a confidence score based on various factors
-            confidence_score = self._calculate_resolution_confidence(
-                similar_incidents=similar_incidents,
-                incident=incident,
-                model=model_to_use
-            )
-            logger.debug(f"Generated resolution with confidence score: {confidence_score:.2f}")
-            
-            # Store the generated resolution in the database if requested
-            if store_result:
-                resolution = Resolution(
-                    incident_id=incident_id,
-                    suggestion=resolution_text,
-                    confidence=confidence_score,
-                    is_applied=False,
-                    generated_at=datetime.utcnow()
-                )
+            try:
+                # Get the latest resolution for this incident
+                resolution_query = select(Resolution).where(
+                    Resolution.incident_id == incident_id
+                ).order_by(sqlalchemy.desc(Resolution.generated_at))
                 
-                session.add(resolution)
-                await session.commit()
-                logger.info(f"Stored resolution in database for incident ID: {incident_id}")
-            
-            # Return comprehensive result
-            return {
-                "resolution_text": resolution_text,
-                "confidence": confidence_score,
-                "incident_id": incident_id,
-                "generated_at": datetime.utcnow().isoformat(),
-                "model_used": model_to_use,
-                "similar_incidents_count": len(similar_incidents)
-            }
-        except Exception as e:
-            self._track_metric("llm_errors")
-            logger.exception(f"Error generating resolution: {str(e)}")
-            raise
-        finally:
-            processing_time = time.time() - start_time
-            logger.debug(f"Resolution generation completed in {processing_time:.2f}s")
-            self._track_metric("total_processing_time", processing_time)
+                resolution_result = await session.execute(resolution_query)
+                resolution = resolution_result.scalars().first()
+                
+                if resolution:
+                    # Delete it
+                    await session.delete(resolution)
+                    await session.commit()
+                    logger.debug(f"Deleted resolution for incident ID: {incident_id} as store_result=False")
+            except Exception as e:
+                logger.error(f"Error handling store_result=False: {str(e)}")
+                # Rollback the session
+                await session.rollback()
+        
+        return result
     
-    def _format_incident_for_resolution_prompt(self, incident, events) -> str:
-        """
-        Format incident and events data for the resolution prompt.
-        
-        :param incident: Incident database model
-        :param events: List of event database models
-        :return: Formatted text for the incident
-        """
-        incident_text = f"Incident: {incident.title}\n"
-        incident_text += f"Description: {incident.description}\n"
-        incident_text += f"Severity: {incident.severity}\n"
-        incident_text += f"Source: {incident.source}\n"
-        incident_text += f"Status: {incident.status}\n"
-        incident_text += f"Created at: {incident.created_at}\n\n"
-        
-        if events:
-            incident_text += "Related Events:\n"
-            for i, event in enumerate(events):
-                incident_text += f"Event {i+1}: {event.source}/{event.event_type}\n"
-                # Extract and format content more intelligently
-                if isinstance(event.content, dict):
-                    important_fields = ['error', 'message', 'reason', 'status', 'title', 'description']
-                    content_text = ""
-                    
-                    # Extract important fields first
-                    for field in important_fields:
-                        if field in event.content:
-                            value = event.content[field]
-                            if value:
-                                content_text += f"  {field}: {value}\n"
-                    
-                    # Add a sample of other fields
-                    other_fields = [k for k in event.content.keys() if k not in important_fields][:3]
-                    for field in other_fields:
-                        value = event.content[field]
-                        if isinstance(value, (str, int, float, bool)):
-                            content_text += f"  {field}: {value}\n"
-                    
-                    incident_text += content_text
-                else:
-                    incident_text += f"Content: {str(event.content)[:300]}...(truncated)\n\n"
-        
-        return incident_text
-    
-    def _format_similar_incidents_for_resolution_prompt(self, incidents) -> str:
-        """
-        Format similar incidents for the resolution prompt.
-        
-        :param incidents: List of similar incidents
-        :return: Formatted text for similar incidents
-        """
-        similar_incidents_text = ""
-        for i, similar in enumerate(incidents):
-            similar_incidents_text += f"Similar incident {i+1}: {similar.get('title')}\n"
-            similar_incidents_text += f"Description: {similar.get('description')}\n"
-            if similar.get('resolution'):
-                similar_incidents_text += f"Resolution: {similar.get('resolution')}\n"
-            similar_incidents_text += f"Similarity score: {similar.get('similarity_score', 0):.2f}\n\n"
-        
-        return similar_incidents_text
-    
-    def _create_resolution_prompt(self, incident_text, similar_incidents_text) -> str:
-        """
-        Create a prompt for resolution generation.
-        
-        :param incident_text: Formatted text for the current incident
-        :param similar_incidents_text: Formatted text for similar incidents
-        :return: Complete prompt for the LLM
-        """
-        return f"""
-        Based on the following incident details and similar past incidents, generate a comprehensive resolution suggestion.
-        
-        CURRENT INCIDENT:
-        {incident_text}
-        
-        SIMILAR PAST INCIDENTS:
-        {similar_incidents_text or "No similar resolved incidents found."}
-        
-        Your task:
-        1. Analyze the current incident details
-        2. Consider solutions from similar past incidents
-        3. Provide a step-by-step resolution plan
-        4. Include any diagnostic steps needed
-        5. Suggest preventive measures to avoid similar incidents in the future
-        
-        Resolution suggestion:
-        """
-    
-    def _calculate_resolution_confidence(
+    async def generate_resolution_with_generator(
         self,
-        similar_incidents: List[Dict],
-        incident,
-        model: str
-    ) -> float:
+        incident_id: int,
+        session: AsyncSession,
+        force_regenerate: bool = False,
+        model: Optional[str] = None,
+        temperature: float = 0.3,
+    ) -> Optional[Dict[str, Any]]:
         """
-        Calculate a confidence score for the generated resolution.
+        Generate a resolution for an incident using ResolutionGenerator.
         
-        :param similar_incidents: List of similar incidents
-        :param incident: Current incident
-        :param model: LLM model used
-        :return: Confidence score between 0 and 1
+        :param incident_id: ID of the incident
+        :param session: Database session
+        :param force_regenerate: Force regeneration even if resolution exists
+        :param model: Optional model to use
+        :param temperature: Temperature for generation
+        :return: Resolution data or None if failed
         """
-        # Base confidence - different for different models
-        base_confidence = 0.7 if "gpt-4" in model else 0.6
+        # Lazy import to avoid circular imports
+        from system_guardian.services.ai.resolution_generator import ResolutionGenerator
         
-        # Adjust based on the number and quality of similar incidents
-        similar_incidents_factor = 0.0
-        if similar_incidents:
-            # Average similarity score of top incidents
-            avg_similarity = sum(s.get("similarity_score", 0) for s in similar_incidents) / len(similar_incidents)
-            similar_incidents_factor = min(0.2, avg_similarity * 0.25)
-            
-            # Bonus if there are resolutions in similar incidents
-            has_resolutions = any(s.get("resolution") for s in similar_incidents)
-            if has_resolutions:
-                similar_incidents_factor += 0.05
+        # Create a resolution generator
+        resolution_generator = ResolutionGenerator(ai_engine=self)
         
-        # Adjust based on incident severity - higher severity may be more complex
-        severity_factor = 0.0
-        if hasattr(incident, "severity"):
-            if incident.severity == "critical":
-                severity_factor = -0.05
-            elif incident.severity == "low":
-                severity_factor = 0.05
-                
-        # Combine factors, ensuring a reasonable range
-        confidence = base_confidence + similar_incidents_factor + severity_factor
-        return max(0.2, min(0.95, confidence))  # Clamp between 0.2 and 0.95
+        # Generate resolution
+        return await resolution_generator.generate_resolution(
+            incident_id=incident_id,
+            session=session,
+            force_regenerate=force_regenerate,
+            model=model,
+            temperature=temperature,
+        )
