@@ -4,14 +4,12 @@ from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Header, Request, Depends, BackgroundTasks
 from loguru import logger
-from aiokafka import AIOKafkaProducer
 from aio_pika import Channel
 from aio_pika.pool import Pool
 
 from system_guardian.web.api.ingest.jira.schema import Message
 from system_guardian.web.api.ingest.schema import StandardEventMessage
 from system_guardian.services.ingest import MessagePublisher
-from system_guardian.services.kafka.dependencies import get_kafka_producer
 from system_guardian.services.rabbit.dependencies import get_rmq_channel_pool
 
 router = APIRouter()
@@ -22,7 +20,6 @@ async def process_jira_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
     x_jira_event: Optional[str] = Header(None, alias="X-Jira-Event"),
-    kafka_producer: Optional[AIOKafkaProducer] = Depends(get_kafka_producer),
     rmq_channel_pool: Optional[Pool[Channel]] = Depends(get_rmq_channel_pool),
 ) -> Message:
     """
@@ -30,12 +27,11 @@ async def process_jira_webhook(
 
     This endpoint accepts Jira webhook payloads for various events
     and processes them according to the event type specified in the X-Jira-Event header.
-    It also forwards the event to configured message queues.
+    It also forwards the event to configured message queue.
 
     :param request: The incoming request object
     :param background_tasks: FastAPI background tasks object for async processing
     :param x_jira_event: Jira event type from X-Jira-Event header
-    :param kafka_producer: Kafka producer dependency
     :param rmq_channel_pool: RabbitMQ channel pool dependency
     :returns: message indicating successful processing
     """
@@ -55,14 +51,14 @@ async def process_jira_webhook(
             event_id=str(body.get("id", "unknown")),
             timestamp=body.get("timestamp", ""),
             raw_payload=body,
+            check_for_incident=False,
         )
 
-        # Forward to message queues in the background
+        # Forward to message queue in the background
         # This allows us to respond to the webhook quickly without waiting for message queue processing
         background_tasks.add_task(
             MessagePublisher.publish_event,
             event_message=event_message,
-            kafka_producer=kafka_producer,
             rmq_channel_pool=rmq_channel_pool,
         )
 

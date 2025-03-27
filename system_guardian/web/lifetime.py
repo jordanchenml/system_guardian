@@ -8,7 +8,6 @@ from openai import AsyncOpenAI
 
 from system_guardian.db.meta import meta
 from system_guardian.db.models import load_all_models
-from system_guardian.services.kafka.lifetime import init_kafka, shutdown_kafka
 from system_guardian.services.rabbit.lifetime import init_rabbit, shutdown_rabbit
 from system_guardian.services.consumers.event_consumer import EventConsumer
 from system_guardian.services.ai.engine import AIEngine
@@ -105,19 +104,19 @@ async def _initialize_qdrant_collections(qdrant_client) -> None:  # pragma: no c
                     distance="Cosine",
                 )
                 logging.getLogger("system_guardian").info(
-                    f"Collection {collection_name} initialized"
+                    f"Collection {collection_name} initialized",
                 )
             except Exception as e:
                 logging.getLogger("system_guardian").error(
-                    f"Failed to initialize collection {collection_name}: {e}"
+                    f"Failed to initialize collection {collection_name}: {e}",
                 )
 
         logging.getLogger("system_guardian").info(
-            "Vector collections initialization completed"
+            "Vector collections initialization completed",
         )
     except Exception as e:
         logging.getLogger("system_guardian").error(
-            f"Error initializing Qdrant collections: {e}"
+            f"Error initializing Qdrant collections: {e}",
         )
 
 
@@ -195,7 +194,6 @@ def register_startup_event(
         _setup_ai_engine(app)
         await _create_tables()
         init_rabbit(app)
-        await init_kafka(app)
         await _start_event_consumer(app)
         app.middleware_stack = app.build_middleware_stack()
         pass  # noqa: WPS420
@@ -218,7 +216,6 @@ def register_shutdown_event(
         await _stop_event_consumer(app)
         await app.state.db_engine.dispose()
         await shutdown_rabbit(app)
-        await shutdown_kafka(app)
         pass  # noqa: WPS420
 
     return _shutdown

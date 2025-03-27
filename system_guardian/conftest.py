@@ -6,7 +6,6 @@ import pytest
 from aio_pika import Channel
 from aio_pika.abc import AbstractExchange, AbstractQueue
 from aio_pika.pool import Pool
-from aiokafka import AIOKafkaProducer
 from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import (
@@ -18,8 +17,6 @@ from sqlalchemy.ext.asyncio import (
 
 from system_guardian.db.dependencies import get_db_session
 from system_guardian.db.utils import create_database, drop_database
-from system_guardian.services.kafka.dependencies import get_kafka_producer
-from system_guardian.services.kafka.lifetime import init_kafka, shutdown_kafka
 from system_guardian.services.rabbit.dependencies import get_rmq_channel_pool
 from system_guardian.services.rabbit.lifetime import init_rabbit, shutdown_rabbit
 from system_guardian.settings import settings
@@ -172,23 +169,9 @@ async def test_queue(
 
 
 @pytest.fixture
-async def test_kafka_producer() -> AsyncGenerator[AIOKafkaProducer, None]:
-    """
-    Creates kafka's producer.
-
-    :yields: kafka's producer.
-    """
-    app_mock = Mock()
-    await init_kafka(app_mock)
-    yield app_mock.state.kafka_producer
-    await shutdown_kafka(app_mock)
-
-
-@pytest.fixture
 def fastapi_app(
     dbsession: AsyncSession,
     test_rmq_pool: Pool[Channel],
-    test_kafka_producer: AIOKafkaProducer,
 ) -> FastAPI:
     """
     Fixture for creating FastAPI app.
@@ -198,7 +181,6 @@ def fastapi_app(
     application = get_app()
     application.dependency_overrides[get_db_session] = lambda: dbsession
     application.dependency_overrides[get_rmq_channel_pool] = lambda: test_rmq_pool
-    application.dependency_overrides[get_kafka_producer] = lambda: test_kafka_producer
     return application  # noqa: WPS331
 
 

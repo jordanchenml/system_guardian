@@ -1,97 +1,148 @@
-"""Test script for simulating the complete incident workflow."""
+"""Tests for incident detection and management workflow."""
 
 import asyncio
-import json
+import os
+import uuid
 from datetime import datetime
 from typing import Dict, Any
 
-from loguru import logger
+import pytest
+from sqlalchemy.future import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from system_guardian.services.jira.client import JiraClient
-from system_guardian.services.slack.client import SlackClient
-from system_guardian.services.slack.templates import AlertSeverity
-from system_guardian.services.ingest.message_publisher import MessagePublisher
-from system_guardian.web.api.ingest.schema import StandardEventMessage
+from system_guardian.db.models.incidents import Incident, Event
+from system_guardian.services.ai.incident_detector import IncidentDetector
+from system_guardian.services.ai.severity_classifier import SeverityClassifier
+from system_guardian.services.config import ConfigManager
+from system_guardian.services.consumers.event_consumer import EventConsumer
+from system_guardian.settings import settings
 
 
-async def simulate_event_triggering_incident():
-    """Simulate an event that triggers an incident detection."""
-    logger.info("Simulating an event that will trigger incident detection")
-
-    # Create a Slack client to check if it's configured
-    slack_client = SlackClient()
-    if not slack_client.is_configured:
-        logger.warning("Slack notifications are disabled - check your .env file")
-
-    # Create a JIRA client to check if it's configured
-    jira_client = JiraClient()
-    if not jira_client.is_configured:
-        logger.warning("JIRA integration is disabled - check your .env file")
-
-    # Create a mock event that would trigger an incident
-    event = StandardEventMessage(
+async def create_test_incident(session: AsyncSession) -> Incident:
+    """Create a test incident in the database."""
+    # Create incident
+    incident = Incident(
         source="test",
-        event_type="critical_error",
-        event_id="TEST-1234",
-        timestamp=datetime.utcnow(),
-        raw_payload={
-            "alert_id": "ALERT-5678",
-            "severity": "critical",
-            "status": "firing",
-            "title": "Database Connection Failure",
-            "message": "The primary database connection has failed. Multiple services affected.",
-            "host": "db-primary-01",
-            "affected_services": ["api", "web", "auth"],
-            "error_count": 15,
-            "first_occurrence": datetime.utcnow().isoformat(),
-        },
+        title=f"Test Incident {uuid.uuid4()}",
+        description="This is a test incident created for testing purposes.",
+        severity="medium",
+        status="open",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+        closed_at=None,
+        resolution=None,
+        assignee=None,
+        metadata={"test": True},
     )
 
-    # Create mock incident info
-    incident_id = 12324
-    incident_info = {
-        "created_at": datetime.utcnow().isoformat(),
-        "severity": "critical",
-        "title": "Database Connection Failure",
-        "description": "The primary database connection has failed. Multiple services are affected including API, web, and authentication services. Errors have been occurring for the last 5 minutes.",
+    # Add and commit
+    session.add(incident)
+    await session.commit()
+
+    # Refresh to get ID
+    await session.refresh(incident)
+
+    return incident
+
+
+@pytest.mark.asyncio
+async def test_incident_detector_workflow(dbsession: AsyncSession):
+    """Test the complete incident detection workflow."""
+    # Create configuration
+    config = ConfigManager()
+
+    # Create incident detector components
+    severity_classifier = SeverityClassifier()
+
+    # Create incident detector
+    incident_detector = IncidentDetector(
+        config_manager=config,
+        severity_classifier=severity_classifier,
+    )
+
+    # Create a test event consumer without Kafka
+    consumer = EventConsumer(
+        db_session_factory=lambda: dbsession,
+        rmq_channel_pool=None,
+    )
+
+    # Generate test event data
+    source = "github"
+    event_type = "issue"
+    content = {
+        "action": "opened",
+        "issue": {
+            "number": 123,
+            "title": "CRITICAL: System is down and unresponsive",
+            "body": "The production system is completely down. Users are unable to access the application. This is causing a major outage and needs immediate attention.",
+            "state": "open",
+            "created_at": datetime.utcnow().isoformat(),
+        },
+        "repository": {
+            "name": "test-repo",
+            "full_name": "test-org/test-repo",
+        },
+        "sender": {
+            "login": "test-user",
+        },
     }
 
-    # Create Kafka producer and RMQ channel arguments as None
-    # In a real scenario these would be actual connections
-    kafka_producer = None
-    rmq_channel_pool = None
+    # Check conditions
+    conditions_met = await incident_detector.check_event_conditions(
+        content, source, event_type,
+    )
+    assert conditions_met is True, "Event conditions should be met"
 
-    logger.info(f"Triggering incident notification flow for incident #{incident_id}")
+    # Create event in database
+    event = Event(
+        source=source,
+        event_type=event_type,
+        content=content,
+        created_at=datetime.utcnow(),
+        incident_id=None,  # No incident associated yet
+    )
+    dbsession.add(event)
+    await dbsession.commit()
+    await dbsession.refresh(event)
 
-    # Call the publish_incident_detection method directly
-    await MessagePublisher.publish_incident_detection(
-        kafka_producer=kafka_producer,
-        rmq_channel_pool=rmq_channel_pool,
-        event_message=event,
-        incident_id=incident_id,
-        incident_info=incident_info,
+    # Create incident from event
+    incident = await incident_detector.create_incident_from_event(
+        session=dbsession,
+        source=source,
+        event_type=event_type,
+        payload=content,
+        event_id=event.id,
     )
 
-    logger.info("Incident notification flow completed")
-    logger.info("Check JIRA for a new ticket and Slack for a new notification")
+    # Verify incident was created
+    assert incident is not None, "Incident should be created"
+    assert incident.id is not None, "Incident should have an ID"
+    assert incident.source == source, "Incident source should match event source"
+    assert "CRITICAL" in incident.title, "Incident title should contain severity"
+    assert incident.severity in [
+        "high",
+        "critical",
+    ], "Severity should be high or critical"
 
+    # Verify event was linked to incident
+    await dbsession.refresh(event)
+    assert (
+        event.incident_id == incident.id
+    ), "Event should be linked to the created incident"
 
-async def run_simulation():
-    """Run the incident workflow simulation."""
-    logger.info("Starting incident workflow simulation...")
+    # Test retrieving the incident
+    stmt = select(Incident).where(Incident.id == incident.id)
+    result = await dbsession.execute(stmt)
+    retrieved_incident = result.scalar_one_or_none()
 
-    await simulate_event_triggering_incident()
+    assert (
+        retrieved_incident is not None
+    ), "Incident should be retrievable from database"
+    assert (
+        retrieved_incident.id == incident.id
+    ), "Retrieved incident should have the same ID"
 
-    logger.info("Simulation completed!")
-
-
-if __name__ == "__main__":
-    # Configure loguru logger
-    import sys
-    from system_guardian.logging_config import configure_logging
-
-    # Configure logging with default settings
-    configure_logging()
-
-    # Run the simulation
-    asyncio.run(run_simulation())
+    # Clean up (optional for tests as they usually use a test database)
+    await dbsession.delete(incident)
+    await dbsession.delete(event)
+    await dbsession.commit()

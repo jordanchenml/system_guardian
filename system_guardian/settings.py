@@ -63,9 +63,6 @@ class Settings(BaseSettings):
     rabbit_pool_size: int = 2
     rabbit_channel_pool_size: int = 10
 
-    # kafka_bootstrap_servers: List[str] = ["system_guardian-kafka:9092"]
-    kafka_bootstrap_servers: List[str] = ["localhost:9092"]
-
     # Qdrant Vector DB settings
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
@@ -94,15 +91,21 @@ class Settings(BaseSettings):
     ai_default_temperature: float = 0.3  # 低溫以獲得更一致的結果
     ai_creative_temperature: float = 0.7  # 高溫用於需要創造性的任務
 
-    # Slack settings
-    slack_enabled: bool = os.getenv("SYSTEM_GUARDIAN_SLACK_ENABLED", False)
+    # Slack integration settings
+    slack_enabled: bool = os.getenv(
+        "SYSTEM_GUARDIAN_SLACK_ENABLED", "False",
+    ).lower() in ("true", "1", "yes")
     slack_bot_token: Optional[str] = os.getenv("SYSTEM_GUARDIAN_SLACK_BOT_TOKEN")
     slack_channel_id: Optional[str] = os.getenv(
-        "SYSTEM_GUARDIAN_SLACK_CHANNEL_ID", "general"
+        "SYSTEM_GUARDIAN_SLACK_CHANNEL_ID", "general",
     )
-    slack_username: str = "System Guardian"
-    slack_icon_emoji: str = ":robot_face:"
-    slack_timeout: int = 30  # Seconds
+    slack_username: str = os.getenv("SYSTEM_GUARDIAN_SLACK_USERNAME", "System Guardian")
+    slack_icon_emoji: str = os.getenv(
+        "SYSTEM_GUARDIAN_SLACK_ICON_EMOJI", ":robot_face:",
+    )
+    slack_timeout: int = int(
+        os.getenv("SYSTEM_GUARDIAN_SLACK_TIMEOUT", "30"),
+    )  # Seconds
 
     # JIRA settings
     jira_enabled: bool = os.getenv("SYSTEM_GUARDIAN_JIRA_ENABLED", False)

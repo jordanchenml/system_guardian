@@ -18,7 +18,7 @@ async def test_direct_jira_ticket_creation():
     # Check if JIRA is properly configured
     if not jira_client.is_configured:
         logger.error(
-            "JIRA is not configured. Please check your .env file and set SYSTEM_GUARDIAN_JIRA_ENABLED=True."
+            "JIRA is not configured. Please check your .env file and set SYSTEM_GUARDIAN_JIRA_ENABLED=True.",
         )
         return
 
@@ -36,7 +36,7 @@ async def test_direct_jira_ticket_creation():
         logger.info(f"Successfully created JIRA ticket: {result['key']}")
     else:
         logger.error(
-            f"Failed to create JIRA ticket: {result.get('error', 'unknown error')}"
+            f"Failed to create JIRA ticket: {result.get('error', 'unknown error')}",
         )
 
 
@@ -62,7 +62,7 @@ async def test_event_consumer_ticket_creation():
     # Create a minimal EventConsumer instance (without DB and message broker connections)
     event_consumer = EventConsumer(
         db_session_factory=None,  # No DB needed for this test
-        kafka_topics=None,
+        rmq_channel_pool=None,  # No RabbitMQ connection needed for this test
         auto_incident_creation=False,
     )
 

@@ -47,7 +47,7 @@ class SlackClient:
 
     async def send_message(
         self,
-        text: str,
+        text: Union[str, SlackMessageTemplate],
         channel: Optional[str] = None,
         blocks: Optional[List[Dict[str, Any]]] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
@@ -56,7 +56,7 @@ class SlackClient:
         Send a message to Slack.
 
         Args:
-            text: Message text
+            text: Message text or SlackMessageTemplate object
             channel: Channel to send message to, defaults to default_channel
             blocks: Slack blocks for advanced formatting
             attachments: Slack attachments
@@ -65,7 +65,7 @@ class SlackClient:
             Slack API response
         """
         if not self._enabled:
-            logger.info("Slack notifications disabled, message not sent: %s", text[:50])
+            logger.info("Slack notifications disabled, message not sent")
             return {"ok": False, "error": "slack_disabled"}
 
         if not self.token:
@@ -76,6 +76,11 @@ class SlackClient:
         if not target_channel:
             logger.error("Cannot send Slack message: channel not specified")
             return {"ok": False, "error": "channel_not_specified"}
+
+        # Handle SlackMessageTemplate objects
+        if isinstance(text, SlackMessageTemplate):
+            template = text
+            return await self.send_template(template, channel=target_channel)
 
         payload = {
             "channel": target_channel,

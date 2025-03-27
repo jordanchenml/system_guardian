@@ -1,26 +1,23 @@
-"""Services package for system_guardian."""
+"""Application services."""
 
-# Import all submodules here for easy access
-from system_guardian.services import (
-    kafka,
+from system_guardian.services import (  # noqa: WPS300
     rabbit,
     ingest,
-    vector_db,
-    ai,
-    consumers,
-    config,
     slack,
     jira,
+    ai,
+    config,
+    consumers,
+    vector_db,
 )
 
 __all__ = [
-    "kafka",
     "rabbit",
     "ingest",
-    "vector_db",
-    "ai",
-    "consumers",
-    "config",
     "slack",
     "jira",
+    "ai",
+    "config",
+    "consumers",
+    "vector_db",
 ]

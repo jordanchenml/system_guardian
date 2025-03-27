@@ -15,17 +15,20 @@ class StandardEventMessage(BaseModel):
     """
 
     source: str = Field(
-        ..., description="Source of the event (e.g., 'github', 'jira', 'datadog')"
+        ..., description="Source of the event (e.g., 'github', 'jira', 'datadog')",
     )
     event_type: str = Field(
-        ..., description="Type of the event (e.g., 'push', 'issue', 'alert')"
+        ..., description="Type of the event (e.g., 'push', 'issue', 'alert')",
     )
     event_id: str = Field(..., description="Unique identifier for the event")
     timestamp: Any = Field(
-        ..., description="Event timestamp (string ISO format or integer unix timestamp)"
+        ..., description="Event timestamp (string ISO format or integer unix timestamp)",
     )
     raw_payload: Dict[str, Any] = Field(
-        ..., description="Raw event payload with all original data"
+        ..., description="Raw event payload with all original data",
+    )
+    check_for_incident: bool = Field(
+        True, description="Whether this event should be checked for incidents",
     )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -35,6 +38,7 @@ class StandardEventMessage(BaseModel):
             "event_type": self.event_type,
             "event_id": self.event_id,
             "raw_payload": self.raw_payload,
+            "check_for_incident": self.check_for_incident,
         }
 
         # Handle datetime timestamp

@@ -15,8 +15,6 @@ services:
         condition: service_healthy
       rmq:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
     environment:
       SYSTEM_GUARDIAN_HOST: 0.0.0.0
       SYSTEM_GUARDIAN_DB_HOST: system_guardian-db
@@ -25,7 +23,6 @@ services:
       SYSTEM_GUARDIAN_DB_PASS: system_guardian
       SYSTEM_GUARDIAN_DB_BASE: system_guardian
       SYSTEM_GUARDIAN_RABBIT_HOST: system_guardian-rmq
-      TESTKAFKA_KAFKA_BOOTSTRAP_SERVERS: '["system_guardian-kafka:9092"]'
 
   db:
     image: postgres:13.8-bullseye
@@ -56,38 +53,6 @@ services:
       interval: 3s
       timeout: 3s
       retries: 50
-
-  zookeeper:
-    image: "bitnami/zookeeper:3.7.1"
-    hostname: "system_guardian-zookeeper"
-    environment:
-      ALLOW_ANONYMOUS_LOGIN: "yes"
-      ZOO_LOG_LEVEL: "ERROR"
-    healthcheck:
-      test: zkServer.sh status
-      interval: 1s
-      timeout: 3s
-      retries: 30
-
-  kafka:
-    image: "bitnami/kafka:3.2.0"
-    hostname: "system_guardian-kafka"
-    environment:
-      KAFKA_BROKER_ID: "1"
-      ALLOW_PLAINTEXT_LISTENER: "yes"
-      KAFKA_CFG_LISTENERS: "PLAINTEXT://0.0.0.0:9092"
-      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://system_guardian-kafka:9092"
-      KAFKA_CFG_ZOOKEEPER_CONNECT: "system_guardian-zookeeper:2181"
-    healthcheck:
-      test: kafka-topics.sh --list --bootstrap-server localhost:9092
-      interval: 1s
-      timeout: 3s
-      retries: 30
-    depends_on:
-      zookeeper:
-        condition: service_healthy
-
-
 
 volumes:
   system_guardian-db-data:

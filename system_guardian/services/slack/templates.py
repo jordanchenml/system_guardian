@@ -19,13 +19,13 @@ class SlackMessageTemplate(BaseModel):
     """Base class for Slack message templates."""
 
     fallback_text: str = Field(
-        ..., description="Fallback text for clients that don't support blocks"
+        ..., description="Fallback text for clients that don't support blocks",
     )
     blocks: Optional[List[Dict[str, Any]]] = Field(
-        None, description="Slack blocks for formatting"
+        None, description="Slack blocks for formatting",
     )
     attachments: Optional[List[Dict[str, Any]]] = Field(
-        None, description="Slack attachments"
+        None, description="Slack attachments",
     )
 
     @classmethod
@@ -48,7 +48,7 @@ class SlackMessageTemplate(BaseModel):
                         "type": "mrkdwn",
                         "text": message,
                     },
-                }
+                },
             ],
         )
 
@@ -123,7 +123,7 @@ class SlackMessageTemplate(BaseModel):
                         "type": "mrkdwn",
                         "text": f"*Details:*\n{details}",
                     },
-                }
+                },
             )
 
         # Add actions if provided
@@ -175,7 +175,7 @@ class SlackMessageTemplate(BaseModel):
 
         # Format metrics
         metrics_text = "\n".join(
-            [f"• *{key}:* {value}" for key, value in metrics.items()]
+            [f"• *{key}:* {value}" for key, value in metrics.items()],
         )
 
         # Create blocks
@@ -206,7 +206,7 @@ class SlackMessageTemplate(BaseModel):
                         "type": "mrkdwn",
                         "text": f"*Additional Information:*\n{details}",
                     },
-                }
+                },
             )
 
         # Add timestamp
@@ -217,9 +217,9 @@ class SlackMessageTemplate(BaseModel):
                     {
                         "type": "mrkdwn",
                         "text": f"Updated: <!date^{int(__import__('time').time())}^{{date_num}} {{time_secs}}|now>",
-                    }
+                    },
                 ],
-            }
+            },
         )
 
         # Create attachments for color
@@ -314,9 +314,9 @@ class SlackMessageTemplate(BaseModel):
                         {
                             "type": "mrkdwn",
                             "text": f"*Time:* {timestamp}",
-                        }
+                        },
                     ],
-                }
+                },
             )
         else:
             # Use current time
@@ -327,10 +327,116 @@ class SlackMessageTemplate(BaseModel):
                         {
                             "type": "mrkdwn",
                             "text": f"*Time:* <!date^{int(__import__('time').time())}^{{date_num}} {{time_secs}}|now>",
-                        }
+                        },
                     ],
-                }
+                },
             )
+
+        # Add actions if provided
+        if actions:
+            action_block = {
+                "type": "actions",
+                "elements": actions,
+            }
+            blocks.append(action_block)
+
+        # Create attachments for color
+        attachments = [{"color": color}]
+
+        return cls(
+            fallback_text=f"Incident {incident_id}: {title} ({severity.value}) - {description}",
+            blocks=blocks,
+            attachments=attachments,
+        )
+
+    @classmethod
+    def incident_detected(
+        cls,
+        incident_id: int,
+        title: str,
+        severity: AlertSeverity,
+        description: str,
+        source: str,
+        created_at: str,
+        actions: Optional[List[Dict[str, Any]]] = None,
+    ) -> "SlackMessageTemplate":
+        """
+        Create an incident detection template.
+
+        Args:
+            incident_id: Incident ID
+            title: Incident title
+            severity: Incident severity
+            description: Incident description
+            source: Source of the incident
+            created_at: Creation timestamp
+            actions: Action buttons
+
+        Returns:
+            SlackMessageTemplate instance
+        """
+        # Map severity to color
+        color_map = {
+            AlertSeverity.INFO: "#36C5F0",  # Blue
+            AlertSeverity.WARNING: "#ECB22E",  # Yellow
+            AlertSeverity.ERROR: "#E01E5A",  # Red
+            AlertSeverity.CRITICAL: "#7B0000",  # Dark Red
+        }
+        color = color_map.get(severity, "#36C5F0")  # Default to blue
+
+        # Map severity to emoji and text
+        emoji_map = {
+            AlertSeverity.INFO: ":information_source: Low",
+            AlertSeverity.WARNING: ":warning: Medium",
+            AlertSeverity.ERROR: ":x: High",
+            AlertSeverity.CRITICAL: ":rotating_light: Critical",
+        }
+        severity_display = emoji_map.get(severity, ":information_source: Info")
+
+        # Create blocks
+        blocks = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"Incident Detected: {title}",
+                    "emoji": True,
+                },
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*ID:*\n{incident_id}",
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Severity:*\n{severity_display}",
+                    },
+                ],
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Source:*\n{source}",
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Time:*\n{created_at}",
+                    },
+                ],
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Description:*\n{description}",
+                },
+            },
+        ]
 
         # Add actions if provided
         if actions:
