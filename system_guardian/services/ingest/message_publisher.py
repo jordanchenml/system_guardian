@@ -245,17 +245,17 @@ class MessagePublisher:
                     f"Failed to publish incident notification to RabbitMQ: {str(e)}"
                 )
 
-        # Also store in Kafka for historical record and analytics
-        if kafka_producer:
-            try:
-                # Simplified logging
-                logger.info(f"Storing incident #{incident_id} record in Kafka")
-                await kafka_producer.send(
-                    topic=MessagePublisher.INCIDENT_TOPIC,
-                    value=json.dumps(incident_payload).encode("utf-8"),
-                )
-            except Exception as e:
-                logger.error(f"Failed to store incident record in Kafka: {str(e)}")
+        # 完全停止使用Kafka，即使提供了kafka_producer參數
+        # if kafka_producer:
+        #     try:
+        #         # Simplified logging
+        #         logger.info(f"Storing incident #{incident_id} record in Kafka")
+        #         await kafka_producer.send(
+        #             topic=MessagePublisher.INCIDENT_TOPIC,
+        #             value=json.dumps(incident_payload).encode("utf-8"),
+        #         )
+        #     except Exception as e:
+        #         logger.error(f"Failed to store incident record in Kafka: {str(e)}")
 
         # Send Slack notification directly
         try:
@@ -387,7 +387,7 @@ class MessagePublisher:
                 MessagePublisher.send_to_rabbitmq(rmq_channel_pool, event_message)
             )
 
-        # Kafka只用於分析和歷史記錄目的，不參與主要的事件處理
+        # 完全停止使用Kafka，即使提供了kafka_producer也不使用
         # if kafka_producer:
         #     tasks.append(MessagePublisher.send_to_kafka(kafka_producer, event_message))
 
