@@ -65,19 +65,19 @@ class Settings(BaseSettings):
 
     # kafka_bootstrap_servers: List[str] = ["system_guardian-kafka:9092"]
     kafka_bootstrap_servers: List[str] = ["localhost:9092"]
-    
+
     # Qdrant Vector DB settings
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_grpc_port: int = 6334
     qdrant_api_key: Optional[str] = None
     qdrant_timeout: int = 10  # Seconds
-    
+
     # OpenAI settings
     openai_api_key: str = os.getenv("SYSTEM_GUARDIAN_OPENAI_API_KEY")
     openai_embedding_model: str = "text-embedding-ada-002"
     openai_completion_model: str = "gpt-3.5-turbo"
-    
+
     # AI task-specific model settings
     ai_incident_detection_model: str = "gpt-3.5-turbo"  # 用於事件檢測和分析的模型
     ai_severity_classification_model: str = "gpt-3.5-turbo"  # 用於嚴重性分類的模型
@@ -86,13 +86,32 @@ class Settings(BaseSettings):
     ai_root_cause_analysis_model: str = "gpt-4"  # 用於根因分析的模型
     ai_report_generation_model: str = "gpt-4"  # 用於報告生成的模型
     ai_trend_analysis_model: str = "gpt-3.5-turbo"  # 用於趨勢分析的模型
-    
-    # 是否允許使用高級模型 (例如 GPT-4) 
+
+    # 是否允許使用高級模型 (例如 GPT-4)
     ai_allow_advanced_models: bool = True
-    
+
     # 模型溫度設置
     ai_default_temperature: float = 0.3  # 低溫以獲得更一致的結果
     ai_creative_temperature: float = 0.7  # 高溫用於需要創造性的任務
+
+    # Slack settings
+    slack_enabled: bool = os.getenv("SYSTEM_GUARDIAN_SLACK_ENABLED", False)
+    slack_bot_token: Optional[str] = os.getenv("SYSTEM_GUARDIAN_SLACK_BOT_TOKEN")
+    slack_channel_id: Optional[str] = os.getenv(
+        "SYSTEM_GUARDIAN_SLACK_CHANNEL_ID", "general"
+    )
+    slack_username: str = "System Guardian"
+    slack_icon_emoji: str = ":robot_face:"
+    slack_timeout: int = 30  # Seconds
+
+    # JIRA settings
+    jira_enabled: bool = os.getenv("SYSTEM_GUARDIAN_JIRA_ENABLED", False)
+    jira_url: Optional[str] = os.getenv("SYSTEM_GUARDIAN_JIRA_URL")
+    jira_username: Optional[str] = os.getenv("SYSTEM_GUARDIAN_JIRA_USERNAME")
+    jira_api_token: Optional[str] = os.getenv("SYSTEM_GUARDIAN_JIRA_API_TOKEN")
+    jira_project_key: str = os.getenv("SYSTEM_GUARDIAN_JIRA_PROJECT_KEY", "INCIDENT")
+    jira_issue_type: str = os.getenv("SYSTEM_GUARDIAN_JIRA_ISSUE_TYPE", "Bug")
+    jira_timeout: int = 30  # Seconds
 
     @property
     def db_url(self) -> URL:

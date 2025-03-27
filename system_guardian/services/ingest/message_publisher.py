@@ -11,6 +11,11 @@ from aio_pika import Channel, Message
 from aio_pika.pool import Pool
 from aiokafka import AIOKafkaProducer
 
+# Import Slack notification components
+from system_guardian.services.slack.client import SlackClient
+from system_guardian.services.slack.templates import SlackMessageTemplate, AlertSeverity
+from system_guardian.services.jira.client import JiraClient
+
 
 class MessagePublisher:
     """Service for publishing messages to different message queues."""
@@ -251,6 +256,113 @@ class MessagePublisher:
                 )
             except Exception as e:
                 logger.error(f"Failed to store incident record in Kafka: {str(e)}")
+
+        # Send Slack notification directly
+        try:
+            # Create SlackClient
+            slack_client = SlackClient()
+
+            # Skip if Slack is not configured
+            if not slack_client.is_configured:
+                logger.warning(
+                    "Slack notifications disabled, skipping incident notification"
+                )
+                return
+
+            # Map severity from incident to AlertSeverity
+            severity_map = {
+                "low": AlertSeverity.INFO,
+                "medium": AlertSeverity.WARNING,
+                "high": AlertSeverity.ERROR,
+                "critical": AlertSeverity.CRITICAL,
+                # Default mappings if the severity doesn't match exactly
+                "info": AlertSeverity.INFO,
+                "warning": AlertSeverity.WARNING,
+                "error": AlertSeverity.ERROR,
+            }
+
+            # Get incident details
+            severity_str = incident_info.get("severity", "medium").lower()
+            detection_time = incident_info.get(
+                "created_at", datetime.utcnow().isoformat()
+            )
+
+            # Map severity to AlertSeverity enum
+            severity = severity_map.get(severity_str, AlertSeverity.WARNING)
+
+            # Send notification using incident template
+            logger.info(
+                f"Sending direct Slack notification for incident #{incident_id}"
+            )
+            template = SlackMessageTemplate.create_incident_notification(
+                incident_id=str(incident_id),
+                title=incident_info.get("title", "Untitled Incident"),
+                severity=severity,
+                description=incident_info.get(
+                    "description", "No description available"
+                ),
+                timestamp=detection_time,
+            )
+
+            await slack_client.send_template(template)
+            logger.info(f"Direct Slack notification sent for incident #{incident_id}")
+
+        except Exception as e:
+            logger.error(
+                f"Error sending direct Slack notification for incident: {str(e)}"
+            )
+
+        # Create JIRA ticket directly
+        try:
+            # Create JIRA client
+            jira_client = JiraClient()
+
+            # Skip if JIRA is not configured
+            if not jira_client.is_configured:
+                logger.warning(
+                    "JIRA is not properly configured, incident ticket will not be created"
+                )
+                return
+
+            # Get incident details
+            title = incident_info.get("title", "Untitled Incident")
+            description = incident_info.get("description", "No description available")
+            severity_str = incident_info.get("severity", "medium")
+
+            # Get source information if available
+            source = event_message.source
+            event_type = event_message.event_type
+
+            # Log JIRA configuration
+            logger.info(
+                f"JIRA configuration: project_key={jira_client.project_key}, issue_type={jira_client.issue_type}"
+            )
+
+            # Create JIRA ticket
+            logger.info(f"Creating direct JIRA ticket for incident #{incident_id}")
+            result = await jira_client.create_incident_ticket(
+                incident_id=str(incident_id),
+                title=title,
+                description=description,
+                severity=severity_str,
+                source=source,
+                event_type=event_type,
+            )
+
+            if "key" in result:
+                logger.info(
+                    f"Direct JIRA ticket created successfully: {result['key']} for incident #{incident_id}"
+                )
+            else:
+                error_code = result.get("error", "unknown error")
+                error_details = result.get("details", "no details available")
+                logger.error(
+                    f"Failed to create direct JIRA ticket for incident #{incident_id}: {error_code}"
+                )
+                logger.error(f"Error details: {error_details}")
+
+        except Exception as e:
+            logger.error(f"Error creating direct JIRA ticket for incident: {str(e)}")
 
     @staticmethod
     async def publish_event(

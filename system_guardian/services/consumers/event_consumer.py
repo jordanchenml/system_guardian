@@ -21,6 +21,9 @@ from system_guardian.services.ai.incident_detector import IncidentDetector
 from system_guardian.services.config import ConfigManager
 from system_guardian.services.ai.severity_classifier import SeverityClassifier
 from system_guardian.services.ingest.message_publisher import MessagePublisher
+from system_guardian.services.slack.client import SlackClient
+from system_guardian.services.slack.templates import SlackMessageTemplate, AlertSeverity
+from system_guardian.services.jira.client import JiraClient
 
 
 class EventConsumer:
@@ -341,17 +344,143 @@ class EventConsumer:
             )
 
             # Handle incident notification - trigger any follow-up processes needed
-            # For now, we just log it, but this could trigger alerts, notifications, etc.
             logger.info(
                 f"Incident detected: {incident_data.get('title', 'Untitled')} - "
                 f"Severity: {incident_data.get('severity', 'unknown')}"
             )
+
+            # Send Slack notification
+            await self._send_incident_slack_notification(incident_data)
+
+            # Create JIRA ticket
+            await self._create_incident_jira_ticket(incident_data)
+
         except json.JSONDecodeError:
             logger.error(
                 f"Failed to parse incident notification as JSON: {message_body}"
             )
         except Exception as e:
             logger.error(f"Error processing incident notification: {str(e)}")
+
+    async def _send_incident_slack_notification(
+        self, incident_data: Dict[str, Any]
+    ) -> None:
+        """
+        Send a Slack notification for an incident.
+
+        :param incident_data: Incident data from notification
+        """
+        try:
+            # Create SlackClient
+            slack_client = SlackClient()
+
+            # Skip if Slack is not configured
+            if not slack_client.is_configured:
+                logger.warning(
+                    "Slack notifications disabled, skipping incident notification"
+                )
+                return
+
+            # Map severity from incident to AlertSeverity
+            severity_map = {
+                "low": AlertSeverity.INFO,
+                "medium": AlertSeverity.WARNING,
+                "high": AlertSeverity.ERROR,
+                "critical": AlertSeverity.CRITICAL,
+                # Default mappings if the severity doesn't match exactly
+                "info": AlertSeverity.INFO,
+                "warning": AlertSeverity.WARNING,
+                "error": AlertSeverity.ERROR,
+            }
+
+            # Get incident details
+            incident_id = incident_data.get("incident_id", "unknown")
+            title = incident_data.get("title", "Untitled Incident")
+            description = incident_data.get("description", "No description available")
+            severity_str = incident_data.get("severity", "medium").lower()
+            detection_time = incident_data.get(
+                "detection_time", datetime.utcnow().isoformat()
+            )
+
+            # Map severity to AlertSeverity enum
+            severity = severity_map.get(severity_str, AlertSeverity.WARNING)
+
+            # Get source information if available
+            original_event = incident_data.get("original_event", {})
+            source = original_event.get("source", "unknown")
+            event_type = original_event.get("event_type", "unknown")
+
+            # Add source info to description if available
+            if source != "unknown" and event_type != "unknown":
+                source_info = f"\n\nSource: {source}\nEvent Type: {event_type}"
+                description += source_info
+
+            # Send notification using incident template
+            logger.info(f"Sending Slack notification for incident #{incident_id}")
+            template = SlackMessageTemplate.create_incident_notification(
+                incident_id=str(incident_id),
+                title=title,
+                severity=severity,
+                description=description,
+                timestamp=detection_time,
+            )
+
+            await slack_client.send_template(template)
+            logger.info(f"Slack notification sent for incident #{incident_id}")
+
+        except Exception as e:
+            logger.error(f"Error sending Slack notification for incident: {str(e)}")
+
+    async def _create_incident_jira_ticket(self, incident_data: Dict[str, Any]) -> None:
+        """
+        Create a JIRA ticket for an incident.
+
+        :param incident_data: Incident data from notification
+        """
+        try:
+            # Create JIRA client
+            jira_client = JiraClient()
+
+            # Skip if JIRA is not configured
+            if not jira_client.is_configured:
+                logger.warning(
+                    "JIRA is not properly configured, incident ticket will not be created"
+                )
+                return
+
+            # Get incident details
+            incident_id = incident_data.get("incident_id", "unknown")
+            title = incident_data.get("title", "Untitled Incident")
+            description = incident_data.get("description", "No description available")
+            severity = incident_data.get("severity", "medium")
+
+            # Get source information if available
+            original_event = incident_data.get("original_event", {})
+            source = original_event.get("source", "unknown")
+            event_type = original_event.get("event_type", "unknown")
+
+            # Create JIRA ticket
+            logger.info(f"Creating JIRA ticket for incident #{incident_id}")
+            result = await jira_client.create_incident_ticket(
+                incident_id=str(incident_id),
+                title=title,
+                description=description,
+                severity=severity,
+                source=source,
+                event_type=event_type,
+            )
+
+            if "key" in result:
+                logger.info(
+                    f"JIRA ticket created successfully: {result['key']} for incident #{incident_id}"
+                )
+            else:
+                logger.error(
+                    f"Failed to create JIRA ticket for incident #{incident_id}: {result.get('error', 'unknown error')}"
+                )
+
+        except Exception as e:
+            logger.error(f"Error creating JIRA ticket for incident: {str(e)}")
 
     async def process_message(
         self, message_body: str, is_priority: bool = False
