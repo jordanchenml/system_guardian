@@ -423,19 +423,13 @@ class IncidentDetector:
         :returns: Created incident or None if failed
         """
         try:
-            # 添加獨立的調試ID用於追蹤這個方法的執行
-            debug_id = f"{source}_{event_id}_{datetime.utcnow().strftime('%H%M%S')}"
-            logger.info(
-                f"[INCIDENT_CREATE][{debug_id}] 開始創建incident，使用事件ID: {event_id}"
-            )
-
             # Extract title and description
             title, description = self._extract_title_description(
                 source, event_type, payload
             )
 
             logger.info(
-                f"[INCIDENT_CREATE][{debug_id}] Auto-creating incident from {source}/{event_type} event, event_id={event_id}"
+                f"Creating incident from {source}/{event_type} event (event_id={event_id})"
             )
 
             # Auto-classify severity
@@ -446,19 +440,9 @@ class IncidentDetector:
                 events_data=[payload],
             )
 
-            # 避免使用ORM導致的關聯問題，直接使用SQL插入
-            from sqlalchemy import text
-
+            # Create incident using direct SQL to avoid ORM association issues
             try:
-                # 1. 直接用SQL插入incident並設置trigger_event_id
-                logger.debug(
-                    f"[INCIDENT_CREATE][{debug_id}] 使用直接SQL插入新的incident記錄"
-                )
-
-                # 生成當前時間作為datetime物件
-                current_time = datetime.utcnow()
-
-                # 根據數據模型執行插入
+                # Insert incident record
                 sql_insert = text(
                     """
                     INSERT INTO incidents
@@ -476,39 +460,15 @@ class IncidentDetector:
                         "severity": severity,
                         "status": "open",
                         "source": source,
-                        "created_at": current_time,
+                        "created_at": datetime.utcnow(),
                         "trigger_event_id": event_id,
                     },
                 )
 
-                # 獲取新插入記錄的ID
                 new_incident_id = result.scalar_one()
-                logger.debug(
-                    f"[INCIDENT_CREATE][{debug_id}] SQL插入成功，新incident ID: {new_incident_id}"
-                )
+                logger.debug(f"Created new incident with ID: {new_incident_id}")
 
-                # 2. 驗證插入是否成功
-                verify_sql = text(
-                    """
-                    SELECT id, trigger_event_id FROM incidents WHERE id = :id
-                """
-                )
-
-                verify_result = await session.execute(
-                    verify_sql, {"id": new_incident_id}
-                )
-                db_record = verify_result.fetchone()
-
-                if db_record:
-                    logger.debug(
-                        f"[INCIDENT_CREATE][{debug_id}] 驗證成功: incident_id={db_record[0]}, trigger_event_id={db_record[1]}"
-                    )
-                else:
-                    logger.error(
-                        f"[INCIDENT_CREATE][{debug_id}] 驗證失敗: 無法找到剛插入的incident記錄"
-                    )
-
-                # 3. 將event關聯到incident
+                # Update event to associate with incident
                 update_event_sql = text(
                     """
                     UPDATE events
@@ -523,32 +483,20 @@ class IncidentDetector:
                 )
 
                 await session.commit()
-                logger.debug(
-                    f"[INCIDENT_CREATE][{debug_id}] 成功更新event.related_incident_id={new_incident_id}"
-                )
 
-                # 4. 使用ORM創建Incident對象以返回
+                # Load the new incident object
                 new_incident = await session.get(Incident, new_incident_id)
 
-                if new_incident:
-                    logger.info(
-                        f"[INCIDENT_CREATE][{debug_id}] 成功返回完整incident對象，ID: {new_incident.id}, trigger_event_id: {new_incident.trigger_event_id}"
-                    )
-                    return new_incident
-                else:
+                if not new_incident:
                     logger.error(
-                        f"[INCIDENT_CREATE][{debug_id}] 無法加載創建的incident對象"
+                        f"Failed to load created incident (ID: {new_incident_id})"
                     )
                     return None
 
             except Exception as sql_err:
-                logger.error(
-                    f"[INCIDENT_CREATE][{debug_id}] SQL創建incident失敗: {str(sql_err)}"
-                )
-                logger.exception(f"[INCIDENT_CREATE][{debug_id}] 詳細錯誤信息:")
-
-                # 如果SQL方法失敗，嘗試ORM方法
-                logger.debug(f"[INCIDENT_CREATE][{debug_id}] 嘗試使用ORM創建incident")
+                logger.error(f"Failed to create incident via SQL: {str(sql_err)}")
+                await session.rollback()
+                return None
 
             # Associate other related unlinked events
             await self._associate_related_events(
@@ -557,18 +505,12 @@ class IncidentDetector:
 
             # Add incident to vector database for similarity search
             try:
-                logger.debug(
-                    f"[VECTOR_DB] Preparing to index incident #{new_incident.id} in vector database"
-                )
-                # Get Qdrant client
+                logger.debug(f"Indexing incident #{new_incident.id} in vector database")
                 qdrant_client = get_qdrant_client()
-
-                # Initialize similarity service
                 similarity_service = IncidentSimilarityService(
                     qdrant_client=qdrant_client
                 )
 
-                # Create embedding model
                 incident_embedding = IncidentEmbedding(
                     incident_id=str(new_incident.id),
                     title=new_incident.title,
@@ -579,19 +521,8 @@ class IncidentDetector:
                     created_at=new_incident.created_at.isoformat(),
                 )
 
-                # Index in vector database
-                logger.debug(
-                    f"[VECTOR_DB] Starting vector embedding generation for incident #{new_incident.id}"
-                )
                 indexed = await similarity_service.index_incident(incident_embedding)
-                if indexed:
-                    logger.info(
-                        f"Indexed incident {new_incident.id} in vector database"
-                    )
-                    logger.debug(
-                        f"[VECTOR_DB] Incident #{new_incident.id} successfully added to vector database"
-                    )
-                else:
+                if not indexed:
                     logger.error(
                         f"Failed to index incident {new_incident.id} in vector database"
                     )
@@ -599,12 +530,13 @@ class IncidentDetector:
                 logger.error(f"Error indexing incident in vector database: {str(e)}")
 
             logger.info(
-                f"Auto-created incident: {new_incident.id} - {title} (severity: {severity}, triggered by event ID: {event_id})"
+                f"Created incident: #{new_incident.id} - {title} (severity: {severity})"
             )
             return new_incident
 
         except Exception as e:
             logger.error(f"Failed to create incident: {str(e)}")
+            await session.rollback()
             return None
 
     def _extract_title_description(
@@ -668,9 +600,7 @@ class IncidentDetector:
                 )
 
         elif source == "datadog":
-            # 添加Datadog特定處理邏輯
             if event_type == "alert":
-                # 從Datadog警報中提取實際標題和描述
                 datadog_title = payload.get("title", "")
                 datadog_description = payload.get("text", "")
 
@@ -680,7 +610,6 @@ class IncidentDetector:
                 if datadog_description:
                     description = datadog_description
 
-                # 添加額外的有用資訊
                 alert_metric = payload.get("alert_metric", "")
                 if alert_metric:
                     description += f"\n\nMetric: {alert_metric}"
@@ -693,7 +622,7 @@ class IncidentDetector:
                 if host:
                     description += f"\n\nHost: {host}"
 
-                # 添加標籤資訊
+                # Add tag information
                 alert_tags = payload.get("alert_tags", [])
                 if alert_tags:
                     description += f"\n\nTags: {', '.join(alert_tags)}"
@@ -702,111 +631,6 @@ class IncidentDetector:
         description += f"\n\nDetected at: {datetime.utcnow().isoformat()}"
 
         return title, description
-
-    async def _update_event_incident_relation(
-        self, session: AsyncSession, event_id: int, incident_id: int
-    ) -> None:
-        """
-        Update the incident relation for an event.
-
-        :param session: Database session
-        :param event_id: Event ID
-        :param incident_id: Incident ID
-        """
-        # 添加獨立的調試ID用於追蹤這個方法的執行
-        debug_id = f"event{event_id}_incident{incident_id}_{datetime.utcnow().strftime('%H%M%S')}"
-        logger.debug(
-            f"[RELATION][{debug_id}] 開始更新事件-事件關聯: event_id={event_id}, incident_id={incident_id}"
-        )
-
-        try:
-            # 1. 直接用SQL確保trigger_event_id在incidents表中被設置
-            from sqlalchemy import text
-
-            try:
-                logger.debug(
-                    f"[RELATION][{debug_id}] 首先用SQL直接設置trigger_event_id"
-                )
-                update_result = await session.execute(
-                    text(
-                        "UPDATE incidents SET trigger_event_id = :event_id WHERE id = :incident_id"
-                    ),
-                    {"event_id": event_id, "incident_id": incident_id},
-                )
-                await session.commit()
-                logger.debug(f"[RELATION][{debug_id}] SQL更新成功完成")
-            except Exception as sql_err:
-                logger.error(f"[RELATION][{debug_id}] SQL更新失敗: {str(sql_err)}")
-
-            # 2. 標準ORM方式更新關聯
-            # Get the event
-            event = await session.get(Event, event_id)
-            if event:
-                # Update incident ID
-                event.related_incident_id = incident_id
-                logger.debug(
-                    f"[RELATION][{debug_id}] 已設置event.related_incident_id={incident_id}"
-                )
-
-                # Get the incident and verify trigger_event_id
-                incident = await session.get(Incident, incident_id)
-                if incident:
-                    if incident.trigger_event_id != event_id:
-                        logger.warning(
-                            f"[RELATION][{debug_id}] Incident {incident_id} trigger_event_id不符: 期望值={event_id}, 實際值={incident.trigger_event_id}"
-                        )
-
-                        # 如果SQL更新失敗，嘗試ORM更新
-                        incident.trigger_event_id = event_id
-                        logger.debug(
-                            f"[RELATION][{debug_id}] 再次用ORM設置incident.trigger_event_id={event_id}"
-                        )
-                    else:
-                        logger.debug(
-                            f"[RELATION][{debug_id}] 驗證成功: Event {event_id} 是 incident {incident_id} 的trigger_event"
-                        )
-
-                await session.commit()
-                logger.debug(f"[RELATION][{debug_id}] 關係更新提交成功")
-
-                # 3. 再次驗證(資料庫查詢)
-                # 驗證事件和事件的關聯
-                try:
-                    validate_result = await session.execute(
-                        text(
-                            "SELECT trigger_event_id FROM incidents WHERE id = :incident_id"
-                        ),
-                        {"incident_id": incident_id},
-                    )
-                    db_value = validate_result.scalar()
-                    logger.debug(
-                        f"[RELATION][{debug_id}] 資料庫驗證 - Incident #{incident_id}: trigger_event_id = {db_value}"
-                    )
-
-                    if db_value != event_id:
-                        logger.warning(
-                            f"[RELATION][{debug_id}] 資料庫驗證失敗! 預期trigger_event_id應為{event_id}，實際為{db_value}"
-                        )
-                        # 最後嘗試直接執行原始SQL
-                        await session.execute(
-                            text(
-                                "UPDATE incidents SET trigger_event_id = :event_id WHERE id = :incident_id"
-                            ),
-                            {"event_id": event_id, "incident_id": incident_id},
-                        )
-                        await session.commit()
-                        logger.debug(f"[RELATION][{debug_id}] 最終嘗試直接SQL更新完成")
-
-                except Exception as validate_err:
-                    logger.error(
-                        f"[RELATION][{debug_id}] 資料庫驗證時出錯: {str(validate_err)}"
-                    )
-            else:
-                logger.error(f"[RELATION][{debug_id}] 無法找到Event ID {event_id}")
-        except Exception as e:
-            logger.error(
-                f"[RELATION][{debug_id}] 設置事件-事件關聯時發生錯誤: {str(e)}"
-            )
 
     async def _associate_related_events(
         self,
@@ -825,6 +649,8 @@ class IncidentDetector:
         :param session: Database session
         :param incident: The incident to associate events with
         :param source: The source to match
+        :param event_type: Event type
+        :param max_age_hours: Maximum age of events to associate (in hours)
         """
         # Get other unlinked events from the same source that might be related
         one_hour_ago = datetime.utcnow() - timedelta(hours=1)
@@ -833,9 +659,7 @@ class IncidentDetector:
         query = (
             select(Event)
             .where(Event.source == source)
-            .where(
-                Event.related_incident_id.is_(None)
-            )  # Not associated with any incident
+            .where(Event.related_incident_id.is_(None))
             .where(Event.created_at >= one_hour_ago)
             .order_by(Event.created_at.desc())
         )
@@ -843,15 +667,14 @@ class IncidentDetector:
         result = await session.execute(query)
         unlinked_events = result.scalars().all()
 
-        # Link them to this incident
-        for event in unlinked_events[:5]:  # Limit to 5 most recent
+        # Link events to this incident (limit to 5 most recent)
+        count = 0
+        for event in unlinked_events[:5]:
             event.related_incident_id = incident.id
-            logger.debug(
-                f"Associated additional event ID {event.id} with incident {incident.id}"
-            )
+            count += 1
 
-        await session.commit()
-        logger.debug(f"[DB] Association update committed successfully")
-        logger.info(
-            f"Associated {len(unlinked_events)} additional events with incident {incident.id}"
-        )
+        if count > 0:
+            await session.commit()
+            logger.info(
+                f"Associated {count} additional events with incident {incident.id}"
+            )

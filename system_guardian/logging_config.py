@@ -50,22 +50,22 @@ def configure_loguru(
 
     # Define a filter for common loggers we want to suppress
     def filter_noisy_loggers(record):
-        # 完全禁用這些命名空間的日誌
+        # Completely disable logs from these namespaces
         blocked_loggers = ["sqlalchemy", "aio_pika", "asyncio", "httpx", "urllib3"]
 
-        # 檢查記錄是否來自這些命名空間
+        # Check if the record comes from these namespaces
         for logger_name in blocked_loggers:
             if logger_name in record["name"]:
                 return False
 
-        # 過濾掉警告訊息中的特定內容
+        # Filter out specific content in warning messages
         if (
             "Qdrant client version" in record["message"]
             and "incompatible with server version" in record["message"]
         ):
             return False
 
-        # 允許其他所有記錄
+        # Allow all other records
         return True
 
     # Add stdout handler with filter
@@ -104,49 +104,51 @@ def configure_loguru(
 
 def configure_sqlalchemy_logging():
     """
-    專門為 SQLAlchemy 配置更嚴格的日誌設置。
+    Specialized configuration for SQLAlchemy logging.
 
-    由於 SQLAlchemy 日誌較為冗長，這為其提供單獨的控制。
+    Since SQLAlchemy logs are verbose, this provides separate control.
     """
-    # 設置要明確禁止的日誌記錄器
+    # Set up explicitly forbidden loggers
     for unwanted_logger in ["sqlalchemy", "aio_pika", "asyncio"]:
         sql_logger = logging.getLogger(unwanted_logger)
         sql_logger.propagate = False
         sql_logger.handlers = []
-        # 添加一個空處理器，防止警告
+        # Add an empty handler to prevent warnings
         sql_logger.addHandler(NoOpHandler())
-        sql_logger.setLevel(logging.CRITICAL)  # 設置為最高級別以過濾掉大多數消息
+        sql_logger.setLevel(
+            logging.CRITICAL
+        )  # Set to highest level to filter most messages
 
-    # 確保我們的應用也不會接收這些冗長日誌
+    # Ensure our application also doesn't receive these verbose logs
     orig_log = logger.log
 
     def filter_log(level, message, *args, **kwargs):
-        # 獲取調用者日誌記錄器名稱，通常在 'record' 中
+        # Get caller logger name, typically in 'record'
         record = kwargs.get("record", {})
         logger_name = getattr(record, "name", "") if record else ""
 
-        # 過濾掉不需要的記錄器的消息
+        # Filter out messages from unwanted loggers
         if logger_name and any(
             name in logger_name for name in ["sqlalchemy", "aio_pika", "asyncio"]
         ):
-            return  # 不記錄
+            return  # Don't log
 
-        # 對於所有其他消息，使用原始日誌功能
+        # For all other messages, use the original log function
         return orig_log(level, message, *args, **kwargs)
 
-    # 用過濾器版本替換原始日誌方法
+    # Use filtered version instead of original log method
     logger.log = filter_log
 
 
 def configure_logging():
     """Configures the application logging."""
-    # 首先，確保 Python 的日誌系統不會輸出任何內容
+    # First, ensure Python's logging system doesn't output anything
     logging.basicConfig(handlers=[logging.NullHandler()])
 
-    # 立即禁用 SQLAlchemy 日誌
+    # Immediately disable SQLAlchemy logs
     configure_sqlalchemy_logging()
 
-    # 首先，完全關閉幾個我們不想看到日誌的模組
+    # First, completely turn off several modules we don't want to see logs from
     for logger_name in [
         "sqlalchemy",
         "aio_pika",
@@ -156,16 +158,16 @@ def configure_logging():
         "urllib3.connectionpool",
     ]:
         module_logger = logging.getLogger(logger_name)
-        module_logger.setLevel(logging.CRITICAL + 10)  # 高於CRITICAL
+        module_logger.setLevel(logging.CRITICAL + 10)  # Higher than CRITICAL
         module_logger.disabled = True
-        # 移除任何可能的處理器
+        # Remove any possible handlers
         if module_logger.handlers:
             for handler in module_logger.handlers:
                 module_logger.removeHandler(handler)
-        # 防止向上傳播日誌
+        # Prevent log propagation upwards
         module_logger.propagate = False
 
-    # 特別處理 sqlalchemy - 完全禁用其日誌
+    # Special case for sqlalchemy - completely disable its logs
     logging.getLogger("sqlalchemy").disabled = True
     logging.getLogger("sqlalchemy.engine").disabled = True
     logging.getLogger("sqlalchemy.engine.base.Engine").disabled = True
@@ -188,11 +190,11 @@ def configure_logging():
         serialize=settings.structured_logging,
     )
 
-    # 設置一個 NULL 處理器作為回退
+    # Set up a NULL handler as fallback
     null_handler = logging.NullHandler()
     logging.getLogger().addHandler(null_handler)
 
-    # 為每個 SQLAlchemy 日誌器設置攔截處理器
+    # Set up interceptor for each SQLAlchemy logger
     sql_interceptor = SQLAlchemyInterceptor()
     for name in [
         "sqlalchemy",
@@ -202,9 +204,9 @@ def configure_logging():
         "sqlalchemy.dialects",
     ]:
         logger = logging.getLogger(name)
-        logger.handlers = [sql_interceptor]  # 替換所有處理器
+        logger.handlers = [sql_interceptor]  # Replace all handlers
 
-    # 安裝攔截器 - 確保所有標準庫日誌都通過 loguru 重定向
+    # Install interceptor - ensure all standard library logs go through loguru redirection
     intercept_handler = InterceptHandler()
     intercept_handler.intercept_all_loggers()
 
@@ -214,16 +216,16 @@ def configure_logging():
         logger.info(f"Logging to file: {log_file}")
 
 
-# 針對 SQLAlchemy 的特殊攔截器
+# Special interceptor for SQLAlchemy
 class SQLAlchemyInterceptor(logging.Handler):
-    """特別處理 SQLAlchemy 日誌的處理器"""
+    """Special handler for SQLAlchemy logs"""
 
     def __init__(self):
         super().__init__()
-        self.level = logging.CRITICAL + 10  # 超過最高級別
+        self.level = logging.CRITICAL + 10  # Beyond highest level
 
     def emit(self, record):
-        """永遠不發出日誌"""
+        """Never emit logs"""
         pass
 
 
@@ -253,24 +255,24 @@ class InterceptHandler(logging.Handler):
 
         # Add our handler to the root logger
         root_logger.addHandler(self)
-        root_logger.setLevel(logging.WARNING)  # 只關注重要消息
+        root_logger.setLevel(logging.WARNING)  # Only focus on important messages
 
-        # 禁用特定的日誌logger - 使用更強的禁用方法
+        # Disable specific loggers - use stronger disable method
         for unwanted_logger in ["sqlalchemy", "aio_pika", "asyncio"]:
             for suffix in ["", ".engine", ".pool", ".orm", ".dialects"]:
                 log_name = unwanted_logger + suffix
                 logging.getLogger(log_name).setLevel(logging.CRITICAL + 10)
                 logging.getLogger(log_name).disabled = True
                 logging.getLogger(log_name).propagate = False
-                # 確保沒有處理器
+                # Ensure no handlers
                 for handler in logging.getLogger(log_name).handlers[:]:
                     logging.getLogger(log_name).removeHandler(handler)
-                # 添加空處理器
+                # Add empty handler
                 logging.getLogger(log_name).addHandler(logging.NullHandler())
 
         # Iterate through all loggers and configure them
         for logger_name in logging.root.manager.loggerDict:
-            # 跳過不想處理的日誌
+            # Skip unwanted loggers
             if any(
                 name in logger_name for name in ["sqlalchemy", "aio_pika", "asyncio"]
             ):
@@ -299,7 +301,7 @@ class InterceptHandler(logging.Handler):
 
         log = logging.getLogger(logger_name)
 
-        # 完全禁用不想要的日誌
+        # Completely disable unwanted logs
         if any(
             name in logger_name
             for name in ["sqlalchemy", "aio_pika", "asyncio", "httpx", "urllib3"]
@@ -307,11 +309,11 @@ class InterceptHandler(logging.Handler):
             log.setLevel(logging.CRITICAL + 10)
             log.disabled = True
             log.propagate = False
-            # 確保沒有處理器
+            # Ensure no handlers
             if log.handlers:
                 for handler in log.handlers[:]:
                     log.removeHandler(handler)
-            # 添加空處理器
+            # Add empty handler
             log.addHandler(logging.NullHandler())
             return
 
@@ -362,19 +364,19 @@ class InterceptHandler(logging.Handler):
 
         This implements the logging.Handler interface method.
         """
-        # 檢查記錄是否應該被完全忽略
+        # Check if the record should be completely ignored
         if any(
             name in record.name.lower()
             for name in ["sqlalchemy", "aio_pika", "httpx", "asyncio", "urllib3"]
         ):
             return
 
-        # 檢查記錄的級別是否達到了對應日誌器設置的閾值
+        # Check if the record level has reached the corresponding logger's threshold
         logger_obj = logging.getLogger(record.name)
         if logger_obj.disabled or record.levelno < logger_obj.level:
-            return  # 不處理低於設置閾值的日誌
+            return  # Don't handle logs below threshold
 
-        # 避免特定消息內容
+        # Avoid specific message content
         if record.getMessage() and (
             "raw sql" in record.getMessage()
             or "generated in" in record.getMessage()
@@ -397,7 +399,7 @@ class InterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        # 避免記錄uvicorn和fastapi的詳細日誌
+        # Avoid logging details for uvicorn and fastapi
         if (
             any(prefix in record.name for prefix in ["uvicorn", "fastapi"])
             and record.levelno < logging.WARNING
@@ -409,10 +411,10 @@ class InterceptHandler(logging.Handler):
         )
 
 
-# 定義空操作處理器，用於屏蔽不需要的日誌
+# Define empty operation handler, used to suppress unwanted logs
 class NoOpHandler(logging.Handler):
-    """空操作處理器，用於屏蔽不需要的日誌"""
+    """Empty operation handler, used to suppress unwanted logs"""
 
     def emit(self, record):
-        """不做任何處理"""
+        """Do nothing"""
         pass

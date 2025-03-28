@@ -76,20 +76,26 @@ class Settings(BaseSettings):
     openai_completion_model: str = "gpt-3.5-turbo"
 
     # AI task-specific model settings
-    ai_incident_detection_model: str = "gpt-3.5-turbo"  # 用於事件檢測和分析的模型
-    ai_severity_classification_model: str = "gpt-3.5-turbo"  # 用於嚴重性分類的模型
-    ai_similarity_search_model: str = "gpt-3.5-turbo"  # 用於相似度搜索的模型
-    ai_resolution_generation_model: str = "gpt-4"  # 用於解決方案生成的模型
-    ai_root_cause_analysis_model: str = "gpt-4"  # 用於根因分析的模型
-    ai_report_generation_model: str = "gpt-4"  # 用於報告生成的模型
-    ai_trend_analysis_model: str = "gpt-3.5-turbo"  # 用於趨勢分析的模型
+    ai_incident_detection_model: str = (
+        "gpt-3.5-turbo"  # Model for incident detection and analysis
+    )
+    ai_severity_classification_model: str = (
+        "gpt-3.5-turbo"  # Model for severity classification
+    )
+    ai_similarity_search_model: str = "gpt-3.5-turbo"  # Model for similarity search
+    ai_resolution_generation_model: str = "gpt-4"  # Model for solution generation
+    ai_root_cause_analysis_model: str = "gpt-4"  # Model for root cause analysis
+    ai_report_generation_model: str = "gpt-4"  # Model for report generation
+    ai_trend_analysis_model: str = "gpt-3.5-turbo"  # Model for trend analysis
 
-    # 是否允許使用高級模型 (例如 GPT-4)
+    # Whether to allow using advanced models (e.g., GPT-4)
     ai_allow_advanced_models: bool = True
 
-    # 模型溫度設置
-    ai_default_temperature: float = 0.3  # 低溫以獲得更一致的結果
-    ai_creative_temperature: float = 0.7  # 高溫用於需要創造性的任務
+    # Model temperature settings
+    ai_default_temperature: float = 0.3  # Low temperature for more consistent results
+    ai_creative_temperature: float = (
+        0.7  # Higher temperature for tasks requiring creativity
+    )
 
     # Slack settings
     slack_enabled: bool = os.getenv("SYSTEM_GUARDIAN_SLACK_ENABLED", False)
@@ -110,16 +116,16 @@ class Settings(BaseSettings):
     jira_issue_type: str = os.getenv("SYSTEM_GUARDIAN_JIRA_ISSUE_TYPE", "Bug")
     jira_timeout: int = 30  # Seconds
 
-    # 添加事件偵測的默認設置
-    # 控制是否為GitHub事件自動創建incident
+    # Add default settings for event detection
+    # Controls whether to automatically create incidents for GitHub events
     github_auto_detect_incident: bool = (
         os.getenv("GITHUB_AUTO_DETECT_INCIDENT", "true").lower() == "true"
     )
-    # 控制是否為JIRA事件自動創建incident
+    # Controls whether to automatically create incidents for JIRA events
     jira_auto_detect_incident: bool = (
         os.getenv("JIRA_AUTO_DETECT_INCIDENT", "false").lower() == "true"
     )
-    # 控制是否為Datadog事件自動創建incident
+    # Controls whether to automatically create incidents for Datadog events
     datadog_auto_detect_incident: bool = (
         os.getenv("DATADOG_AUTO_DETECT_INCIDENT", "true").lower() == "true"
     )
