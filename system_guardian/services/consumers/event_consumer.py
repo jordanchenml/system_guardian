@@ -4,18 +4,20 @@ import asyncio
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Union, Tuple
+from uuid import UUID
+import re
+import hashlib
 
 from loguru import logger
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
-from aio_pika import connect_robust, IncomingMessage
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
+from aio_pika import connect_robust, IncomingMessage, ExchangeType, Message
+from aio_pika.channel import Channel
+from aio_pika.exceptions import QueueEmpty
+from aio_pika.abc import AbstractQueue
 from aio_pika.pool import Pool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import select, or_, and_, func
 
 from system_guardian.db.models.incidents import Event, Incident
-
-# Remove direct import of StandardEventMessage, use type annotation instead
-# from system_guardian.web.api.ingest.schema import StandardEventMessage
 from system_guardian.settings import settings
 from system_guardian.services.ai.incident_detector import IncidentDetector
 from system_guardian.services.config import ConfigManager
@@ -24,10 +26,14 @@ from system_guardian.services.ingest.message_publisher import MessagePublisher
 from system_guardian.services.slack.client import SlackClient
 from system_guardian.services.slack.templates import SlackMessageTemplate, AlertSeverity
 from system_guardian.services.jira.client import JiraClient
+from system_guardian.services.ai.engine import AIEngine
+
+# Remove direct import of StandardEventMessage, use type annotation instead
+# from system_guardian.web.api.ingest.schema import StandardEventMessage
 
 
 class EventConsumer:
-    """Consumer for processing events from Kafka and RabbitMQ."""
+    """Consumer for processing events from RabbitMQ."""
 
     # Critical event types that should be processed with higher priority
     CRITICAL_EVENT_TYPES = [
@@ -45,36 +51,25 @@ class EventConsumer:
     def __init__(
         self,
         db_session_factory,
-        kafka_topics: Optional[List[str]] = None,
         rmq_exchange: str = "webhook_events",
         rmq_queue: str = "webhook_events_queue",
         rmq_routing_keys: Optional[List[str]] = None,
         auto_incident_creation: bool = True,
         ai_engine=None,
-        kafka_producer=None,
         rmq_channel_pool=None,
     ):
         """
         Initialize the event consumer.
 
         :param db_session_factory: Factory for creating database sessions
-        :param kafka_topics: List of Kafka topics to consume from
         :param rmq_exchange: RabbitMQ exchange name
         :param rmq_queue: RabbitMQ queue name
         :param rmq_routing_keys: List of RabbitMQ routing keys to bind
         :param auto_incident_creation: Whether to automatically create incidents from events
         :param ai_engine: Optional AIEngine instance for enhanced event processing
-        :param kafka_producer: Optional pre-initialized Kafka producer
         :param rmq_channel_pool: Optional pre-initialized RabbitMQ channel pool
         """
         self.db_session_factory = db_session_factory
-        self.kafka_topics = kafka_topics or [
-            "github_events",
-            "jira_events",
-            "datadog_events",
-            "webhook_events",
-            "system_incidents",
-        ]
         self.rmq_exchange = rmq_exchange
         self.rmq_queue = rmq_queue
         self.rmq_routing_keys = rmq_routing_keys or [
@@ -103,280 +98,387 @@ class EventConsumer:
             severity_classifier=self.severity_classifier,
         )
 
-        # 存儲已初始化的消息隊列客戶端
-        self.kafka_producer = kafka_producer
+        # Store RabbitMQ channel pool
         self.rmq_channel_pool = rmq_channel_pool
 
     async def start(self) -> None:
         """Start consuming messages from RabbitMQ."""
-        # 只啟動RabbitMQ消費者，不啟動Kafka消費者
-        # 保留Kafka相關代碼，但不實際啟用
-        consumers = [
-            self.start_rabbitmq_consumer(),
-            # 不使用Kafka作為事件處理通道
-            # self.start_kafka_consumer(),
-        ]
-
-        # Run RabbitMQ consumer
-        await asyncio.gather(*consumers)
+        # 首先進行 DB 連接測試
+        await self.test_database_connection()
+        # 開始消費
+        await self.start_rabbitmq_consumer()
 
     async def stop(self) -> None:
         """Stop all consumers."""
         self.should_exit = True
         logger.info("Event consumer stopping")
 
-    async def start_kafka_consumer(self) -> None:
-        """Start consuming messages from Kafka topics."""
-        logger.info(f"Starting Kafka consumer for topics: {self.kafka_topics}")
-
-        consumer = AIOKafkaConsumer(
-            *self.kafka_topics,
-            bootstrap_servers=settings.kafka_bootstrap_servers,
-            group_id="system_guardian_event_consumer",
-            auto_offset_reset="latest",  # Start consuming from the latest offset
-            enable_auto_commit=False,  # Manual commit for better control
-        )
-
-        # If no Kafka producer is provided, try to create one locally
-        if self.kafka_producer is None:
-            try:
-                # No longer using FastAPI dependencies
-                logger.info(
-                    "No Kafka producer provided, attempting to create one locally"
-                )
-                # Using locally created Kafka producer
-                from aiokafka import AIOKafkaProducer
-
-                self.kafka_producer = AIOKafkaProducer(
-                    bootstrap_servers=settings.kafka_bootstrap_servers,
-                    client_id="system_guardian_event_consumer_local",
-                )
-                await self.kafka_producer.start()
-                logger.info("Created local Kafka producer successfully")
-            except Exception as e:
-                logger.error(f"Failed to create Kafka producer: {str(e)}")
-                logger.warning("Incident notifications to Kafka will be disabled")
-
-        await consumer.start()
-
+    async def test_database_connection(self) -> None:
+        """Test database connection directly."""
+        logger.info("Performing direct database connection test...")
         try:
-            # Consume messages in an infinite loop
-            while not self.should_exit:
+            # Create a test session
+            async with self.db_session_factory() as session:
+                # Try to execute a simple query
+                from sqlalchemy import text
+
+                result = await session.execute(text("SELECT 1 as test"))
+                value = result.scalar()
+                logger.info(f"Database connection test successful, result: {value}")
+
+                # Check if events table exists
                 try:
-                    # Fetch messages with a timeout
-                    batch = await consumer.getmany(timeout_ms=1000)
-
-                    for tp, messages in batch.items():
-                        logger.info(
-                            f"Received {len(messages)} messages from Kafka topic: {tp.topic}"
+                    table_check = await session.execute(
+                        text(
+                            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'events')"
                         )
+                    )
+                    table_exists = table_check.scalar()
+                    logger.info(f"Events table exists: {table_exists}")
 
-                        # Process regular event topics differently from system topics
-                        if tp.topic == "system_incidents":
-                            for message in messages:
-                                await self.process_incident_notification(
-                                    message.value.decode("utf-8")
-                                )
-                        else:
-                            for message in messages:
-                                # Process each regular event message
-                                await self.process_message(
-                                    message.value.decode("utf-8")
-                                )
-
-                    # Commit offsets for the batch
-                    await consumer.commit()
-
-                except Exception as e:
-                    logger.error(f"Error processing Kafka message: {str(e)}")
-
-        finally:
-            # Clean up
-            await consumer.stop()
-            logger.info("Kafka consumer stopped")
+                    if table_exists:
+                        # Check count of events
+                        count_query = await session.execute(
+                            text("SELECT COUNT(*) FROM events")
+                        )
+                        count = count_query.scalar()
+                        logger.info(f"Current events table count: {count}")
+                except Exception as table_error:
+                    logger.error(f"Error checking events table: {str(table_error)}")
+                    logger.exception("Table check error details:")
+        except Exception as db_error:
+            logger.error(f"Database connection test failed: {str(db_error)}")
+            logger.exception("Database test error details:")
 
     async def start_rabbitmq_consumer(self) -> None:
         """Start consuming messages from RabbitMQ."""
         logger.info(f"Starting RabbitMQ consumer for exchange: {self.rmq_exchange}")
 
-        try:
-            # Create connection
-            logger.info(
-                f"Attempting to connect to RabbitMQ: host={settings.rabbit_host}, port={settings.rabbit_port}"
-            )
-            connection = await connect_robust(
-                host=settings.rabbit_host,
-                port=settings.rabbit_port,
-                login=settings.rabbit_user,
-                password=settings.rabbit_pass,
-                virtualhost=settings.rabbit_vhost,
-            )
-            logger.info("Successfully connected to RabbitMQ")
+        max_retries = 3
+        retry_count = 0
+        retry_delay = 5  # seconds
 
-            # Create channel
-            logger.info("Creating RabbitMQ channel...")
-            channel = await connection.channel()
-            logger.info("RabbitMQ channel created successfully")
-
-            # If no RabbitMQ channel pool is provided, try to create one locally
-            if self.rmq_channel_pool is None:
-                try:
-                    # No longer using FastAPI dependencies
-                    logger.warning(
-                        "No RabbitMQ channel pool provided, attempting to create one locally"
-                    )
-                    # Using locally created RabbitMQ channel pool
-                    from aio_pika.pool import Pool
-
-                    async def get_local_connection():
-                        """Get local RabbitMQ connection"""
-                        return await connect_robust(
-                            host=settings.rabbit_host,
-                            port=settings.rabbit_port,
-                            login=settings.rabbit_user,
-                            password=settings.rabbit_pass,
-                            virtualhost=settings.rabbit_vhost,
-                        )
-
-                    connection_pool = Pool(
-                        get_local_connection, max_size=settings.rabbit_pool_size
-                    )
-
-                    async def get_local_channel():
-                        """Get local RabbitMQ channel"""
-                        async with connection_pool.acquire() as connection:
-                            return await connection.channel()
-
-                    self.rmq_channel_pool = Pool(
-                        get_local_channel, max_size=settings.rabbit_channel_pool_size
-                    )
-                    logger.info("Successfully created local RabbitMQ channel pool")
-                except Exception as e:
-                    logger.error(f"Failed to create RabbitMQ channel pool: {str(e)}")
-                    logger.exception("Detailed error information:")
-                    logger.warning("RabbitMQ incident notifications will be disabled")
-
-            # ===== Main RabbitMQ consumer setup =====
-
-            # 1. Setup regular events exchange and queue
-            logger.info(f"Declaring webhook events exchange: {self.rmq_exchange}")
-            webhook_exchange = await channel.declare_exchange(
-                name=self.rmq_exchange,
-                auto_delete=True,
-            )
-
-            logger.info(f"Declaring webhook events queue: {self.rmq_queue}")
-            webhook_queue = await channel.declare_queue(
-                name=self.rmq_queue,
-                durable=True,
-                auto_delete=False,
-            )
-
-            # 2. Bind queue to exchange with routing keys
-            for routing_key in self.rmq_routing_keys:
-                logger.info(f"Binding queue to routing key: {routing_key}")
-                await webhook_queue.bind(
-                    exchange=webhook_exchange,
-                    routing_key=routing_key,
+        while retry_count < max_retries:
+            try:
+                # Create connection
+                logger.info(
+                    f"Attempting to connect to RabbitMQ: host={settings.rabbit_host}, port={settings.rabbit_port}"
                 )
 
-            # 3. Set up message consumer
-            logger.info("Setting up RabbitMQ message consumer...")
+                # 增加連接超時和心跳設置
+                connection = await connect_robust(
+                    host=settings.rabbit_host,
+                    port=settings.rabbit_port,
+                    login=settings.rabbit_user,
+                    password=settings.rabbit_pass,
+                    virtualhost=settings.rabbit_vhost,
+                    timeout=10,  # 增加連接超時
+                    heartbeat=60,  # 定期心跳確保連接活躍
+                )
 
-            async def process_webhook_message(message: IncomingMessage) -> None:
-                """Process a webhook message."""
-                async with message.process():
-                    # Debug log of message information
-                    logger.debug(
-                        f"Received RabbitMQ message: routing_key={message.routing_key}, message_id={message.message_id}"
-                    )
+                logger.info("Successfully connected to RabbitMQ")
 
-                    # Process message body
+                # Create channel
+                logger.info("Creating RabbitMQ channel...")
+                channel = await connection.channel()
+                logger.info("RabbitMQ channel created successfully")
+
+                # If no RabbitMQ channel pool is provided, try to create one locally
+                if self.rmq_channel_pool is None:
                     try:
-                        body = message.body.decode("utf-8")
-                        # Check if message is valid JSON
-                        if len(body) < 5:  # Quick sanity check
-                            logger.warning(
-                                f"Received too short message content (length: {len(body)}), skipping processing"
+                        # No longer using FastAPI dependencies
+                        logger.warning(
+                            "No RabbitMQ channel pool provided, attempting to create one locally"
+                        )
+                        # Using locally created RabbitMQ channel pool
+                        from aio_pika.pool import Pool
+
+                        async def get_local_connection():
+                            """Get local RabbitMQ connection"""
+                            return await connect_robust(
+                                host=settings.rabbit_host,
+                                port=settings.rabbit_port,
+                                login=settings.rabbit_user,
+                                password=settings.rabbit_pass,
+                                virtualhost=settings.rabbit_vhost,
                             )
-                            return
 
-                        # Determine if this is a priority message based on routing key or content
-                        is_priority = any(
-                            critical_type in message.routing_key.lower()
-                            for critical_type in self.CRITICAL_EVENT_TYPES
+                        connection_pool = Pool(
+                            get_local_connection, max_size=settings.rabbit_pool_size
                         )
 
-                        # DEBUG: Add detailed message logs
-                        logger.debug(f"Message body sample: {body[:200]}...")
+                        async def get_local_channel():
+                            """Get local RabbitMQ channel"""
+                            async with connection_pool.acquire() as connection:
+                                return await connection.channel()
 
-                        # Process the message
-                        await self.process_message(body, is_priority=is_priority)
-                    except UnicodeDecodeError as ude:
-                        logger.error(f"Error decoding message body: {str(ude)}")
-                        logger.debug(f"Message body (raw bytes): {message.body[:100]}")
-                    except Exception as e:
-                        logger.error(f"Error processing RabbitMQ message: {str(e)}")
-                        logger.exception("Detailed error information:")
-
-            # Start consuming
-            logger.info(f"Starting to consume messages from queue {self.rmq_queue}")
-            await webhook_queue.consume(process_webhook_message)
-
-            # 4. Setup incidents exchange and queue for notification
-            logger.info("Setting up incident exchange and queue...")
-
-            incidents_exchange = await channel.declare_exchange(
-                name="system_incidents",
-                auto_delete=False,
-            )
-
-            incidents_queue = await channel.declare_queue(
-                name="system_incidents_queue",
-                durable=True,
-                auto_delete=False,
-            )
-
-            await incidents_queue.bind(
-                exchange=incidents_exchange,
-                routing_key="incidents.*",
-            )
-
-            # Incident notification handler
-            async def process_incident_notification(message: IncomingMessage) -> None:
-                """Process an incident notification message."""
-                async with message.process():
-                    try:
-                        logger.info(
-                            f"Received incident notification: routing_key={message.routing_key}"
+                        self.rmq_channel_pool = Pool(
+                            get_local_channel,
+                            max_size=settings.rabbit_channel_pool_size,
                         )
-                        body = message.body.decode("utf-8")
-                        await self.process_incident_notification(body)
+                        logger.info("Successfully created local RabbitMQ channel pool")
                     except Exception as e:
                         logger.error(
-                            f"Error processing incident notification: {str(e)}"
+                            f"Failed to create RabbitMQ channel pool: {str(e)}"
                         )
                         logger.exception("Detailed error information:")
+                        logger.warning(
+                            "RabbitMQ incident notifications will be disabled"
+                        )
 
-            # Start consuming incidents
-            logger.info("Starting to consume messages from incident queue")
-            await incidents_queue.consume(process_incident_notification)
+                # ===== Main RabbitMQ consumer setup =====
 
-            # Keep alive until should_exit flag is set
-            logger.info("RabbitMQ consumer started and running")
-            while not self.should_exit:
-                await asyncio.sleep(1)
+                # 1. Setup regular events exchange and queue
+                logger.info(f"Declaring webhook events exchange: {self.rmq_exchange}")
+                webhook_exchange = await channel.declare_exchange(
+                    name=self.rmq_exchange,
+                    type=ExchangeType.TOPIC,
+                    auto_delete=False,
+                    durable=False,
+                )
 
-        except Exception as e:
-            logger.error(f"Error starting RabbitMQ consumer: {str(e)}")
-            logger.exception("Detailed error information:")
+                logger.info(f"Declaring webhook events queue: {self.rmq_queue}")
+                webhook_queue = await channel.declare_queue(
+                    name=self.rmq_queue,
+                    durable=True,
+                    auto_delete=False,
+                )
 
-            if not self.should_exit:
-                # Try to reconnect after a delay if not explicitly stopped
-                retry_delay = 5
-                logger.info(f"Will attempt to reconnect in {retry_delay} seconds...")
-                await asyncio.sleep(retry_delay)
-                await self.start_rabbitmq_consumer()  # Recursive restart
+                # 2. Bind queue to exchange with routing keys
+                for routing_key in self.rmq_routing_keys:
+                    # Direct exchange 需要精確匹配路由鍵，我們需要為每個可能的路由鍵模式創建綁定
+                    if "*" in routing_key:
+                        base_key = routing_key.replace("*", "")
+                        logger.info(
+                            f"Creating multiple bindings for pattern: {routing_key}"
+                        )
+
+                        # 對於 github.* 模式，我們需要綁定常見的 github 事件
+                        if base_key == "github.":
+                            common_events = [
+                                "push",
+                                "pull_request",
+                                "issues",
+                                "commit_comment",
+                                "release",
+                            ]
+                            for event in common_events:
+                                specific_key = f"github.{event}"
+                                logger.info(
+                                    f"Binding queue to specific routing key: {specific_key}"
+                                )
+                                await webhook_queue.bind(
+                                    exchange=webhook_exchange,
+                                    routing_key=specific_key,
+                                )
+
+                        # 對於 jira.* 模式，綁定常見的 jira 事件
+                        elif base_key == "jira.":
+                            common_events = [
+                                "issue_created",
+                                "issue_updated",
+                                "comment_added",
+                                "issue_deleted",
+                            ]
+                            for event in common_events:
+                                specific_key = f"jira.{event}"
+                                logger.info(
+                                    f"Binding queue to specific routing key: {specific_key}"
+                                )
+                                await webhook_queue.bind(
+                                    exchange=webhook_exchange,
+                                    routing_key=specific_key,
+                                )
+
+                        # 對於 datadog.* 模式，綁定常見的 datadog 事件
+                        elif base_key == "datadog.":
+                            common_events = ["alert", "metric", "event", "monitor"]
+                            for event in common_events:
+                                specific_key = f"datadog.{event}"
+                                logger.info(
+                                    f"Binding queue to specific routing key: {specific_key}"
+                                )
+                                await webhook_queue.bind(
+                                    exchange=webhook_exchange,
+                                    routing_key=specific_key,
+                                )
+                    else:
+                        # 對於沒有通配符的路由鍵，直接綁定
+                        logger.info(f"Binding queue to routing key: {routing_key}")
+                        await webhook_queue.bind(
+                            exchange=webhook_exchange,
+                            routing_key=routing_key,
+                        )
+
+                # 確保我們總是綁定測試路由鍵
+                logger.info("Binding queue to test routing key: test.event")
+                await webhook_queue.bind(
+                    exchange=webhook_exchange,
+                    routing_key="test.event",
+                )
+
+                # 添加一個通用路由鍵，捕獲所有消息
+                logger.info("Binding queue to fallback routing key: #")
+                await webhook_queue.bind(
+                    exchange=webhook_exchange,
+                    routing_key="#",
+                )
+
+                # 3. Set up message consumer
+                logger.info("Setting up RabbitMQ message consumer...")
+
+                async def process_webhook_message(message: IncomingMessage) -> None:
+                    """Process a webhook message."""
+                    # Add immediate logging at the start
+                    logger.info(
+                        f"===> RECEIVED MESSAGE: routing_key={message.routing_key}, message_id={message.message_id}"
+                    )
+
+                    # Log EVERY incoming message
+                    logger.warning(
+                        f"!!INCOMING MESSAGE DETAILS: routing_key={message.routing_key}, content_type={message.content_type}, size={len(message.body) if message.body else 0}"
+                    )
+
+                    try:
+                        async with message.process():
+                            # Debug log of message information
+                            logger.debug(
+                                f"Received RabbitMQ message: routing_key={message.routing_key}, message_id={message.message_id}"
+                            )
+
+                            # Process message body
+                            try:
+                                body = message.body.decode("utf-8")
+                                # Check if message is valid JSON
+                                if len(body) < 5:  # Quick sanity check
+                                    logger.warning(
+                                        f"Received too short message content (length: {len(body)}), skipping processing"
+                                    )
+                                    return
+
+                                # 添加更詳細的日誌
+                                logger.warning(f"!!MESSAGE BODY START: {body[:500]}")
+
+                                # Log the first part of the message for debugging
+                                logger.info(
+                                    f"Message content (truncated): {body[:200]}..."
+                                )
+
+                                # Determine if this is a priority message based on routing key or content
+                                is_priority = any(
+                                    critical_type in message.routing_key.lower()
+                                    for critical_type in self.CRITICAL_EVENT_TYPES
+                                )
+
+                                # DEBUG: Add detailed message logs
+                                logger.debug(f"Message body sample: {body[:200]}...")
+
+                                # Process the message
+                                logger.info(
+                                    f"Starting to process message: {message.routing_key}"
+                                )
+                                await self.process_message(
+                                    body, is_priority=is_priority
+                                )
+                                logger.info(
+                                    f"Finished processing message: {message.routing_key}"
+                                )
+                            except UnicodeDecodeError as ude:
+                                logger.error(f"Error decoding message body: {str(ude)}")
+                                logger.debug(
+                                    f"Message body (raw bytes): {message.body[:100]}"
+                                )
+                            except Exception as e:
+                                logger.error(
+                                    f"Error processing RabbitMQ message: {str(e)}"
+                                )
+                                logger.exception("Detailed error information:")
+                    except Exception as process_error:
+                        logger.error(
+                            f"Error in message.process(): {str(process_error)}"
+                        )
+                        logger.exception("Message processing error details:")
+
+                # Start consuming with prefetch count set to 10 for processing multiple messages
+                logger.info(f"Setting QoS prefetch count to 10 for better throughput")
+                await channel.set_qos(prefetch_count=10)
+
+                logger.info(f"Starting to consume messages from queue {self.rmq_queue}")
+                consumer_tag = await webhook_queue.consume(process_webhook_message)
+                logger.info(f"Consumer started with tag: {consumer_tag}")
+
+                # 4. Setup incidents exchange and queue for notification
+                logger.info("Setting up incident exchange and queue...")
+
+                incidents_exchange = await channel.declare_exchange(
+                    name="system_incidents",
+                    auto_delete=False,
+                )
+
+                incidents_queue = await channel.declare_queue(
+                    name="system_incidents_queue",
+                    durable=True,
+                    auto_delete=False,
+                )
+
+                await incidents_queue.bind(
+                    exchange=incidents_exchange,
+                    routing_key="incidents.*",
+                )
+
+                # Incident notification handler
+                async def process_incident_notification(
+                    message: IncomingMessage,
+                ) -> None:
+                    """Process an incident notification message."""
+                    async with message.process():
+                        try:
+                            logger.info(
+                                f"Received incident notification: routing_key={message.routing_key}"
+                            )
+                            body = message.body.decode("utf-8")
+                            await self.process_incident_notification(body)
+                        except Exception as e:
+                            logger.error(
+                                f"Error processing incident notification: {str(e)}"
+                            )
+                            logger.exception("Detailed error information:")
+
+                # Start consuming incidents
+                logger.info("Starting to consume messages from incident queue")
+                await incidents_queue.consume(process_incident_notification)
+
+                # Keep alive until should_exit flag is set
+                logger.info("RabbitMQ consumer started and running")
+                while not self.should_exit:
+                    await asyncio.sleep(1)
+
+                # 正常退出
+                logger.info("Closing RabbitMQ consumer gracefully")
+                await connection.close()
+                logger.info("RabbitMQ connection closed")
+                return
+
+            except Exception as channel_error:
+                logger.error(f"Channel error: {str(channel_error)}")
+                if connection and not connection.is_closed:
+                    await connection.close()
+                raise  # 重新拋出異常以觸發重試
+
+            except Exception as e:
+                retry_count += 1
+                logger.error(f"Error starting RabbitMQ consumer: {str(e)}")
+                logger.exception("Detailed error information:")
+
+                if retry_count < max_retries:
+                    wait_time = retry_delay * retry_count
+                    logger.info(f"Will attempt to reconnect in {wait_time} seconds...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(
+                        f"Failed to start RabbitMQ consumer after {max_retries} retries"
+                    )
+                    break
 
     async def process_incident_notification(self, message_body: str) -> None:
         """
@@ -405,6 +507,29 @@ class EventConsumer:
                 logger.warning("Incident notification missing incident_id field")
                 return
 
+            # Validate incident data structure
+            if not isinstance(incident_data, dict):
+                logger.error(
+                    f"Incident data is not a dictionary: {type(incident_data)}"
+                )
+                return
+
+            # Ensure we have all required fields for notifications
+            required_fields = ["incident_id", "title", "severity"]
+            missing_fields = [
+                field for field in required_fields if field not in incident_data
+            ]
+            if missing_fields:
+                logger.warning(
+                    f"Incident notification missing required fields: {missing_fields}"
+                )
+                # Set defaults for missing fields
+                for field in missing_fields:
+                    if field == "title":
+                        incident_data["title"] = f"Incident #{incident_id}"
+                    elif field == "severity":
+                        incident_data["severity"] = "medium"
+
             # Process Slack notifications if enabled
             if settings.slack_enabled and settings.slack_bot_token:
                 await self.send_slack_notification(incident_data)
@@ -421,283 +546,170 @@ class EventConsumer:
         self, message_body: str, is_priority: bool = False
     ) -> None:
         """
-        Process a message from either Kafka or RabbitMQ.
+        Process a message from the queue.
 
         :param message_body: The message body as a string
         :param is_priority: Whether this is a priority message
         """
-        # Add prefix for logs to identify the message type
-        message_prefix = "[PRIORITY]" if is_priority else "[STD]"
+        # Generate a trace ID for tracking this message
+        trace_id = hashlib.md5(message_body.encode()).hexdigest()[:8]
+        logger.info(
+            f"[PROCESS][{trace_id}] Processing {'priority ' if is_priority else ''}message"
+        )
 
         try:
-            # Log basic message info - using more concise log format
+            # Parse the message body as JSON
+            data = json.loads(message_body)
+            logger.debug(f"[PROCESS][{trace_id}] Message parsed successfully")
+
+            # Extract metadata
+            source = data.get("source", "unknown")
+            event_type = data.get("event_type", "unknown")
+            raw_payload = data.get("raw_payload", {})
+
+            # 從消息中獲取auto_detect_incident參數，如果不存在則根據來源設置默認值
+            # 根據預設：JIRA設為False，其他都是True
+            auto_detect_incident = data.get("auto_detect_incident")
+
+            # 如果消息中沒有設置，則根據來源使用默認值
+            if auto_detect_incident is None:
+                if source.lower() == "jira":
+                    auto_detect_incident = False
+                else:
+                    auto_detect_incident = True
+
+            # 記錄是否將為此事件自動創建incident
             logger.info(
-                f"{message_prefix} Processing message, content length: {len(message_body)} characters"
+                f"[PROCESS][{trace_id}] Event auto_detect_incident set to {auto_detect_incident} for {source}/{event_type}"
             )
 
-            try:
-                # Parse JSON message
-                logger.debug(
-                    f"{message_prefix} Original message content: {message_body[:200]}..."
-                )
-                try:
-                    message_dict = json.loads(message_body)
-                except json.JSONDecodeError as json_error:
-                    logger.error(
-                        f"{message_prefix} JSON parsing error: {str(json_error)}"
-                    )
-                    logger.error(
-                        f"{message_prefix} Invalid JSON data: {message_body[:500]}"
-                    )
-                    return
+            # Process based on the source and event type
+            logger.info(f"[PROCESS][{trace_id}] Processing {source}/{event_type} event")
 
-                # Extract required fields
-                source = message_dict.get("source", "unknown")
-                event_type = message_dict.get("event_type", "unknown")
-                event_id = message_dict.get("event_id", "unknown")
-                raw_payload = message_dict.get("raw_payload", {})
-
+            if not auto_detect_incident:
                 logger.info(
-                    f"{message_prefix} Message content: source={source}, type={event_type}, id={event_id}"
+                    f"[PROCESS][{trace_id}] Auto incident detection disabled for source: {source}"
                 )
 
-                # Add more detailed logging for Datadog events
-                if source == "datadog":
-                    logger.info(
-                        f"{message_prefix} Processing Datadog event: source={source}, type={event_type}, id={event_id}"
-                    )
-
-                # Check for well-formed message (essential fields)
-                if (
-                    not source
-                    or source == "unknown"
-                    or not event_type
-                    or event_type == "unknown"
-                ):
-                    logger.warning(
-                        f"{message_prefix} Invalid message format, missing source or event_type"
-                    )
-                    return
-
-                # Get session from the sessionmaker
-                # Simplified database operation logging
-                logger.debug(
-                    f"{message_prefix} Creating database session for event {source}/{event_type}"
-                )
+            # 正常處理流程
+            try:
                 async with self.db_session_factory() as session:
-                    # Store to database first (even if no incident)
-                    logger.info(
-                        f"{message_prefix} Storing event to database: {source}/{event_type}"
-                    )
-
-                    # Special handling for Datadog events
-                    if source == "datadog":
-                        logger.info(
-                            f"{message_prefix} Datadog event original data sample: {str(raw_payload)[:200]}..."
-                        )
-
-                    # DEBUG: Print raw payload type
-                    logger.debug(
-                        f"{message_prefix} Raw payload type: {type(raw_payload)}"
-                    )
-                    logger.debug(
-                        f"{message_prefix} Raw payload sample: {str(raw_payload)[:200]}..."
-                    )
-
-                    # 嘗試存儲事件
+                    # 儲存事件到資料庫
                     event = await self.store_event(
                         session, source, event_type, raw_payload
                     )
 
                     if not event:
-                        logger.error(
-                            f"{message_prefix} Unable to store event {source}/{event_type}"
-                        )
+                        logger.error(f"[PROCESS][{trace_id}] Failed to store event")
                         return
 
                     logger.info(
-                        f"{message_prefix} Stored event {source}/{event_type}, ID: {event.id}"
+                        f"[PROCESS][{trace_id}] Successfully stored event ID: {event.id}"
                     )
 
-                    # Check if we need to create an incident
-                    if not event.incident_id:  # Not already linked
-                        logger.debug(
-                            f"{message_prefix} Checking if incident should be created for event ID {event.id}"
+                    # 只有在auto_detect_incident=True且auto_incident_creation=True的情況下進行事件檢測
+                    if (
+                        auto_detect_incident
+                        and not event.related_incident_id
+                        and self.auto_incident_creation
+                    ):
+                        # 檢查是否需要創建事件
+                        logger.info(
+                            f"[PROCESS][{trace_id}] Checking if incident should be created"
                         )
-
-                        # Use any available incident detector
                         detector = self.incident_detector
 
-                        logger.debug(
-                            f"{message_prefix} Using incident_detector to check event ID {event.id}"
+                        # 執行事件檢測邏輯
+                        conditions_met = await detector.check_event_conditions(
+                            event.content, event.source, event.event_type
                         )
-
-                        # Check if this event meets basic conditions for an incident
-                        conditions_met = False
-                        try:
-                            conditions_met = await detector.check_event_conditions(
-                                event.content, event.source, event.event_type
-                            )
-                            logger.info(
-                                f"{message_prefix} Event condition check result: {conditions_met}"
-                            )
-                        except Exception as conditions_error:
-                            logger.error(
-                                f"{message_prefix} Error checking event conditions: {str(conditions_error)}"
-                            )
-                            logger.exception("Detailed error information:")
 
                         if conditions_met:
                             logger.info(
-                                f"{message_prefix} Event ID {event.id} meets conditions for incident creation"
+                                f"[PROCESS][{trace_id}] Event meets conditions for incident creation"
                             )
 
-                            # Use appropriate methods to determine whether to create an incident
-                            # Check if thresholds are exceeded
-                            threshold_breach = False
-                            has_keywords = False
+                            # 檢查閾值和關鍵字
+                            threshold_breach = await detector.check_event_thresholds(
+                                session, event.source, event.event_type
+                            )
 
-                            try:
-                                threshold_breach = (
-                                    await detector.check_event_thresholds(
-                                        session, event.source, event.event_type
-                                    )
-                                )
+                            has_keywords = await detector.analyze_content_for_keywords(
+                                event.content, event.source, event.event_type
+                            )
+
+                            if threshold_breach or has_keywords:
                                 logger.info(
-                                    f"{message_prefix} Threshold check result: {threshold_breach}"
-                                )
-                            except Exception as threshold_error:
-                                logger.error(
-                                    f"{message_prefix} Error checking event thresholds: {str(threshold_error)}"
-                                )
-                                logger.exception("Detailed error information:")
-
-                            # Check for keywords
-                            try:
-                                has_keywords = (
-                                    await detector.analyze_content_for_keywords(
-                                        event.content, event.source, event.event_type
-                                    )
-                                )
-                                logger.info(
-                                    f"{message_prefix} Keyword check result: {has_keywords}"
-                                )
-                            except Exception as keyword_error:
-                                logger.error(
-                                    f"{message_prefix} Error analyzing content for keywords: {str(keyword_error)}"
-                                )
-                                logger.exception("Detailed error information:")
-
-                            # If any detection method is triggered, create an incident
-                            should_create = threshold_breach or has_keywords
-
-                            if should_create:
-                                logger.info(
-                                    f"{message_prefix} Creating incident for event {event.source}/{event.event_type}"
+                                    f"[PROCESS][{trace_id}] Creating incident for event ID: {event.id}"
                                 )
 
-                                # Create incident
-                                incident = None
-                                try:
-                                    incident = (
-                                        await detector.create_incident_from_event(
-                                            session,
-                                            event.source,
-                                            event.event_type,
-                                            event.content,
-                                            event.id,
-                                        )
-                                    )
-                                except Exception as create_error:
-                                    logger.error(
-                                        f"{message_prefix} Error creating incident: {str(create_error)}"
-                                    )
-                                    logger.exception("Detailed error information:")
+                                # 創建事件
+                                incident = await detector.create_incident_from_event(
+                                    session,
+                                    event.source,
+                                    event.event_type,
+                                    event.content,
+                                    event.id,
+                                )
 
-                                if not incident:
-                                    logger.error(
-                                        f"{message_prefix} Unable to create incident for event ID {event.id}"
-                                    )
-                                else:
+                                if incident:
                                     logger.info(
-                                        f"{message_prefix} Created incident ID {incident.id}"
+                                        f"[PROCESS][{trace_id}] Created incident ID: {incident.id}"
                                     )
 
-                                    # 3. If incident was successfully created, publish notification
-                                    if incident:
-                                        try:
-                                            logger.info(
-                                                f"{message_prefix} Creating notification for incident ID {incident.id}"
-                                            )
+                                    # 發布事件通知
+                                    from system_guardian.web.api.ingest.schema import (
+                                        StandardEventMessage,
+                                    )
 
-                                            # Dynamic import to avoid circular imports
-                                            from system_guardian.web.api.ingest.schema import (
-                                                StandardEventMessage,
-                                            )
+                                    event_message = StandardEventMessage(
+                                        source=event.source,
+                                        event_type=event.event_type,
+                                        event_id=str(event.id),
+                                        timestamp=event.created_at,
+                                        raw_payload=event.content,
+                                    )
 
-                                            event_message = StandardEventMessage(
-                                                source=event.source,
-                                                event_type=event.event_type,
-                                                event_id=str(event.id),
-                                                timestamp=event.created_at,
-                                                raw_payload=event.content,
-                                            )
+                                    incident_info = {
+                                        "created_at": (
+                                            incident.created_at.isoformat()
+                                            if incident.created_at
+                                            else datetime.utcnow().isoformat()
+                                        ),
+                                        "severity": incident.severity,
+                                        "title": incident.title,
+                                        "description": incident.description,
+                                    }
 
-                                            # Extract incident info for notification
-                                            incident_info = {
-                                                "created_at": (
-                                                    incident.created_at.isoformat()
-                                                    if incident.created_at
-                                                    else datetime.utcnow().isoformat()
-                                                ),
-                                                "severity": incident.severity,
-                                                "title": incident.title,
-                                                "description": incident.description,
-                                            }
+                                    await MessagePublisher.publish_incident_detection(
+                                        rmq_channel_pool=self.rmq_channel_pool,
+                                        event_message=event_message,
+                                        incident_id=incident.id,
+                                        incident_info=incident_info,
+                                    )
+                    else:
+                        if not auto_detect_incident:
+                            logger.info(
+                                f"[PROCESS][{trace_id}] Auto incident detection disabled for {source}"
+                            )
+                        elif event.related_incident_id:
+                            logger.info(
+                                f"[PROCESS][{trace_id}] Event already associated with incident ID: {event.related_incident_id}"
+                            )
+                        elif not self.auto_incident_creation:
+                            logger.info(
+                                f"[PROCESS][{trace_id}] Auto incident creation is disabled"
+                            )
 
-                                            logger.info(
-                                                f"{message_prefix} Publishing incident ID {incident.id} notification"
-                                            )
-
-                                            try:
-                                                # 修改：僅使用RabbitMQ發送事件，不使用Kafka
-                                                await MessagePublisher.publish_incident_detection(
-                                                    kafka_producer=None,  # 設置為None，不使用Kafka發布
-                                                    rmq_channel_pool=self.rmq_channel_pool,
-                                                    event_message=event_message,
-                                                    incident_id=incident.id,
-                                                    incident_info=incident_info,
-                                                )
-                                                logger.info(
-                                                    f"{message_prefix} Successfully published incident ID {incident.id} notification"
-                                                )
-                                            except Exception as publish_error:
-                                                logger.error(
-                                                    f"{message_prefix} Error publishing incident ID {incident.id} notification: {str(publish_error)}"
-                                                )
-                                                logger.exception(
-                                                    "Detailed error information:"
-                                                )
-
-                                            logger.info(
-                                                f"{message_prefix} Completed incident ID {incident.id} creation and notification"
-                                            )
-                                        except Exception as e:
-                                            logger.error(
-                                                f"{message_prefix} Error publishing incident ID {incident.id} notification: {str(e)}"
-                                            )
-                                            logger.exception(
-                                                "Detailed error information:"
-                                            )
-            except Exception as session_error:
-                logger.error(
-                    f"{message_prefix} Database session error: {str(session_error)}"
-                )
-                logger.exception("Detailed error information:")
+            except Exception as db_error:
+                logger.error(f"[PROCESS][{trace_id}] Database error: {str(db_error)}")
+                logger.exception(f"[PROCESS][{trace_id}] Detailed error:")
 
         except Exception as e:
-            logger.error(f"Unhandled error processing message: {str(e)}")
-            logger.exception("Detailed error information:")
+            logger.error(f"[PROCESS][{trace_id}] Error processing message: {str(e)}")
+            logger.exception(f"[PROCESS][{trace_id}] Detailed error:")
+
+        logger.info(f"[PROCESS][{trace_id}] Message processing completed")
 
     async def store_event(
         self,
@@ -705,7 +717,7 @@ class EventConsumer:
         source: str,
         event_type: str,
         raw_payload: Dict[str, Any],
-        incident_id: Optional[int] = None,
+        related_incident_id: Optional[int] = None,
     ) -> Optional[Event]:
         """
         Store an event to the database.
@@ -714,165 +726,178 @@ class EventConsumer:
         :param source: Event source
         :param event_type: Event type
         :param raw_payload: Event payload
-        :param incident_id: Optional incident ID to associate with
+        :param related_incident_id: Optional incident ID to associate with
         :returns: The created event
         """
+        # Add a unique identifier for tracking this specific event processing
+        event_trace_id = (
+            f"{source}_{event_type}_{datetime.utcnow().strftime('%H%M%S%f')}"
+        )
+
         try:
             logger.info(
-                f"[DB] Attempting to store event: {source}/{event_type}, payload size: {len(str(raw_payload))}"
+                f"[DB][{event_trace_id}] Attempting to store event: {source}/{event_type}"
             )
 
-            # Check raw_payload type
-            logger.debug(f"[DB] raw_payload type: {type(raw_payload)}")
-
-            # Implement improved deduplication logic
-            # Only consider an event duplicate if source, event_type, AND content are the same
-
-            # Define a time window for deduplication check (5 minutes)
-            time_threshold = datetime.utcnow() - timedelta(minutes=5)
-
-            # Build query to find events with the same source and event_type within the time window
-            stmt = select(Event).where(
-                (Event.source == source)
-                & (Event.event_type == event_type)
-                & (Event.created_at > time_threshold)
-            )
-
-            # Execute the query
-            result = await session.execute(stmt)
-            existing_events = result.scalars().all()
-
-            # Check if any existing event has identical content
-            raw_payload_str = (
-                json.dumps(raw_payload, sort_keys=True)
-                if isinstance(raw_payload, dict)
-                else str(raw_payload)
-            )
-
-            for existing_event in existing_events:
-                try:
-                    # Convert existing event content to string for comparison
-                    existing_content = existing_event.content
-                    existing_content_str = (
-                        json.dumps(existing_content, sort_keys=True)
-                        if isinstance(existing_content, dict)
-                        else str(existing_content)
-                    )
-
-                    # Compare content strings
-                    if existing_content_str == raw_payload_str:
-                        logger.info(
-                            f"[DB] Found duplicate event: {source}/{event_type}, ID: {existing_event.id}"
-                        )
-                        return existing_event
-                except Exception as e:
-                    # If content comparison fails, log and continue checking other events
-                    logger.warning(
-                        f"[DB] Content comparison failed for event ID {existing_event.id}: {str(e)}"
-                    )
-                    continue
-
-            # If no duplicate found, proceed with storing the new event
-            logger.info(
-                f"[DB] No duplicate found. Storing event to database: {source}/{event_type}"
-            )
-
-            # If no explicit incident_id, try to find relevant incident
-            if incident_id is None:
-                incident_id = await self.find_relevant_incident(
-                    session, source, event_type, raw_payload
-                )
-                if incident_id:
-                    logger.info(f"[DB] Found relevant incident: #{incident_id}")
-
-            # Create event object
-            event = Event(
-                incident_id=incident_id,
-                source=source,
-                event_type=event_type,
-                content=raw_payload,
-                created_at=datetime.utcnow(),
-            )
-
-            # Add to session
-            session.add(event)
-
-            # Add more detailed logging
-            logger.debug(
-                f"[DB] Executing insert operation: event[{source}/{event_type}], object ID: {id(event)}"
-            )
-
-            # Commit transaction
+            # Try direct SQL execution test
             try:
-                await session.commit()
+                from sqlalchemy import text
+
+                # First check if we can do a basic SELECT query
+                logger.info(f"[DB][{event_trace_id}] Testing database connection")
+                check_query = await session.execute(text("SELECT 1 as test"))
+                test_result = check_query.scalar()
                 logger.info(
-                    f"[DB] Transaction committed successfully: event[{source}/{event_type}]"
+                    f"[DB][{event_trace_id}] Basic SELECT test result: {test_result}"
                 )
-            except Exception as commit_error:
-                logger.error(f"[DB] Transaction commit failed: {str(commit_error)}")
-                logger.exception("[DB] Detailed error information:")
-                # Try to rollback transaction
-                try:
-                    await session.rollback()
-                    logger.info(f"[DB] Transaction rolled back")
-                except Exception as rollback_error:
-                    logger.error(
-                        f"[DB] Transaction rollback failed: {str(rollback_error)}"
-                    )
-                raise commit_error
 
-            # Reload event object to get latest data (like auto-generated ID)
-            try:
-                await session.refresh(event)
-                logger.info(f"[DB] Event object successfully reloaded: ID={event.id}")
-            except Exception as refresh_error:
+                # Check if events table exists
+                logger.info(f"[DB][{event_trace_id}] Checking if events table exists")
+                try:
+                    table_check = await session.execute(
+                        text(
+                            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'events')"
+                        )
+                    )
+                    table_exists = table_check.scalar()
+                    logger.info(
+                        f"[DB][{event_trace_id}] Events table exists: {table_exists}"
+                    )
+
+                    if not table_exists:
+                        logger.error(
+                            f"[DB][{event_trace_id}] CRITICAL ERROR: Events table does not exist!"
+                        )
+                        return None
+
+                except Exception as table_check_err:
+                    logger.error(
+                        f"[DB][{event_trace_id}] Error checking table existence: {str(table_check_err)}"
+                    )
+
+                # Try direct SQL insert
+                logger.info(f"[DB][{event_trace_id}] Attempting direct SQL insert")
+
+                # Create simple content
+                event_content = json.dumps(raw_payload)
+
+                # Create timestamp
+                current_time = datetime.utcnow()
+
+                # Prepare SQL with related_incident_id if provided
+                sql_insert_query = """
+                    INSERT INTO events (source, event_type, content, created_at{related_incident_col}) 
+                    VALUES (:source, :event_type, :content, :created_at{related_incident_val})
+                    RETURNING id
+                """
+
+                # SQL parameters
+                sql_params = {
+                    "source": source,
+                    "event_type": event_type,
+                    "content": event_content,
+                    "created_at": current_time,
+                }
+                logger.warning(f"[DB][{event_trace_id}] SQL parameters: {sql_params}")
+
+                # Add related_incident_id if provided
+                related_incident_col = (
+                    ", related_incident_id" if related_incident_id is not None else ""
+                )
+                related_incident_val = (
+                    ", :related_incident_id" if related_incident_id is not None else ""
+                )
+
+                if related_incident_id is not None:
+                    sql_params["related_incident_id"] = related_incident_id
+
+                # Format the SQL query with the correct columns
+                formatted_sql = sql_insert_query.format(
+                    related_incident_col=related_incident_col,
+                    related_incident_val=related_incident_val,
+                )
+
+                # Try raw SQL insert
+                try:
+                    raw_insert = await session.execute(
+                        text(formatted_sql),
+                        sql_params,
+                    )
+
+                    new_id = raw_insert.scalar()
+                    logger.info(
+                        f"[DB][{event_trace_id}] Direct SQL insert successful, ID: {new_id}"
+                    )
+
+                    # Commit the transaction
+                    await session.commit()
+                    logger.info(
+                        f"[DB][{event_trace_id}] Transaction committed successfully"
+                    )
+
+                    if new_id:
+                        # Create an event object with the actual payload data
+                        event = Event(
+                            id=new_id,
+                            source=source,
+                            event_type=event_type,
+                            content=raw_payload,
+                            created_at=current_time,
+                            related_incident_id=related_incident_id,
+                        )
+                        return event
+
+                except Exception as insert_err:
+                    logger.error(
+                        f"[DB][{event_trace_id}] Direct SQL insert failed: {str(insert_err)}"
+                    )
+                    logger.exception(f"[DB][{event_trace_id}] Insert error details:")
+
+                    # Try to get specific PostgreSQL error info
+                    if hasattr(insert_err, "__cause__") and insert_err.__cause__:
+                        logger.error(
+                            f"[DB][{event_trace_id}] PostgreSQL error: {str(insert_err.__cause__)}"
+                        )
+
+            except Exception as sql_err:
                 logger.error(
-                    f"[DB] Unable to reload event object: {str(refresh_error)}"
+                    f"[DB][{event_trace_id}] SQL execution test failed: {str(sql_err)}"
                 )
-                logger.exception("[DB] Detailed error information:")
-                # Try to get event by query
-                try:
-                    stmt = (
-                        select(Event)
-                        .where(
-                            (Event.source == source)
-                            & (Event.event_type == event_type)
-                            & (
-                                Event.created_at
-                                > (datetime.utcnow() - timedelta(minutes=1))
-                            )
-                        )
-                        .order_by(Event.created_at.desc())
-                    )
-                    result = await session.execute(stmt)
-                    event = result.scalar_one_or_none()
-                    if event:
-                        logger.info(
-                            f"[DB] Found recently created event via query, ID: {event.id}"
-                        )
-                    else:
-                        logger.warning(
-                            f"[DB] Unable to find recently created event via query"
-                        )
-                except Exception as query_error:
-                    logger.error(
-                        f"[DB] Unable to get event via query: {str(query_error)}"
-                    )
-                    raise refresh_error
+                logger.exception(f"[DB][{event_trace_id}] SQL test error details:")
 
-            # Verify event was created and has ID
-            if event and event.id:
+            # If direct SQL failed, try one more time with ORM
+            try:
+                logger.info(f"[DB][{event_trace_id}] Attempting ORM insert")
+
+                # Create an event object with the actual payload data
+                event = Event(
+                    source=source,
+                    event_type=event_type,
+                    content=raw_payload,
+                    created_at=datetime.utcnow(),
+                    related_incident_id=related_incident_id,
+                )
+
+                # Add to session and commit
+                session.add(event)
+                await session.commit()
+                await session.refresh(event)
+
                 logger.info(
-                    f"[DB] Successfully stored {source} event, type: {event_type}, ID: {event.id}"
+                    f"[DB][{event_trace_id}] ORM insert successful, ID: {event.id}"
                 )
                 return event
-            else:
-                logger.error(f"[DB] Event seems stored but no ID assigned")
+
+            except Exception as orm_err:
+                logger.error(
+                    f"[DB][{event_trace_id}] ORM insert failed: {str(orm_err)}"
+                )
+                logger.exception(f"[DB][{event_trace_id}] ORM error details:")
                 return None
 
         except Exception as e:
-            logger.error(f"[DB] Error storing event {source}/{event_type}: {str(e)}")
-            logger.exception("[DB] Detailed error information:")
+            logger.error(f"[DB][{event_trace_id}] Fatal error storing event: {str(e)}")
+            logger.exception(f"[DB][{event_trace_id}] Detailed error:")
             return None
 
     async def find_relevant_incident(
@@ -894,7 +919,11 @@ class EventConsumer:
         :param raw_payload: Event payload
         :returns: Incident ID or None
         """
-        logger.debug(f"Finding relevant incident for {source}/{event_type} event")
+        # Generate trace id for logging
+        trace_id = f"{source}_{event_type}_{datetime.utcnow().strftime('%H%M%S')}"
+        logger.debug(
+            f"[FIND][{trace_id}] Finding relevant incident for {source}/{event_type} event"
+        )
 
         try:
             # 1. First attempt to find open incidents from the same source that are recent
@@ -905,12 +934,28 @@ class EventConsumer:
                 .order_by(Incident.created_at.desc())
             )
 
-            # Execute the query and get the first five recent open incidents (to limit comparison)
-            result = await session.execute(query)
-            recent_incidents = result.scalars().fetchmany(5)
+            # Log the query for debugging
+            logger.debug(f"[FIND][{trace_id}] Executing query: {str(query)}")
+
+            # Add error handling for database operations
+            try:
+                # Execute the query and get the first five recent open incidents (to limit comparison)
+                result = await session.execute(query)
+                recent_incidents = result.scalars().fetchmany(5)
+
+                # Log the results
+                logger.debug(
+                    f"[FIND][{trace_id}] Found {len(recent_incidents)} recent incidents"
+                )
+            except Exception as db_error:
+                logger.error(
+                    f"[FIND][{trace_id}] Database error finding incidents: {str(db_error)}"
+                )
+                logger.exception(f"[FIND][{trace_id}] Database error details:")
+                return None
 
             if not recent_incidents:
-                logger.debug(f"No open {source} incidents found")
+                logger.debug(f"[FIND][{trace_id}] No open {source} incidents found")
                 return None
 
             # 2. Extract meaningful content from the event
@@ -918,33 +963,47 @@ class EventConsumer:
             event_description = ""
 
             # Handle different sources differently to extract the most relevant content
-            if source == "github":
-                if "issue" in event_type:
-                    event_title = raw_payload.get("issue", {}).get("title", "")
-                    event_description = raw_payload.get("issue", {}).get("body", "")
-                elif "pull_request" in event_type:
-                    event_title = raw_payload.get("pull_request", {}).get("title", "")
-                    event_description = raw_payload.get("pull_request", {}).get(
-                        "body", ""
+            try:
+                if source == "github":
+                    if "issue" in event_type:
+                        event_title = raw_payload.get("issue", {}).get("title", "")
+                        event_description = raw_payload.get("issue", {}).get("body", "")
+                    elif "pull_request" in event_type:
+                        event_title = raw_payload.get("pull_request", {}).get(
+                            "title", ""
+                        )
+                        event_description = raw_payload.get("pull_request", {}).get(
+                            "body", ""
+                        )
+                elif source == "jira":
+                    event_title = (
+                        raw_payload.get("issue", {})
+                        .get("fields", {})
+                        .get("summary", "")
                     )
-            elif source == "jira":
-                event_title = (
-                    raw_payload.get("issue", {}).get("fields", {}).get("summary", "")
+                    event_description = (
+                        raw_payload.get("issue", {})
+                        .get("fields", {})
+                        .get("description", "")
+                    )
+                elif source == "datadog":
+                    event_title = raw_payload.get("title", "")
+                    event_description = raw_payload.get(
+                        "message", ""
+                    ) or raw_payload.get("text", "")
+                elif source == "slack":
+                    event_description = raw_payload.get("text", "") or raw_payload.get(
+                        "message", {}
+                    ).get("text", "")
+
+                logger.debug(
+                    f"[FIND][{trace_id}] Extracted title: '{event_title[:50]}...' and description (length: {len(event_description)})"
                 )
-                event_description = (
-                    raw_payload.get("issue", {})
-                    .get("fields", {})
-                    .get("description", "")
+            except Exception as extract_error:
+                logger.error(
+                    f"[FIND][{trace_id}] Error extracting content from payload: {str(extract_error)}"
                 )
-            elif source == "datadog":
-                event_title = raw_payload.get("title", "")
-                event_description = raw_payload.get("message", "") or raw_payload.get(
-                    "text", ""
-                )
-            elif source == "slack":
-                event_description = raw_payload.get("text", "") or raw_payload.get(
-                    "message", {}
-                ).get("text", "")
+                # Continue with empty strings rather than fail
 
             # If we couldn't extract meaningful content, fallback to simpler methods
             if not event_title and not event_description:
@@ -953,7 +1012,7 @@ class EventConsumer:
                 most_recent = recent_incidents[0] if recent_incidents else None
                 if most_recent:
                     logger.debug(
-                        f"No meaningful content extracted, associating with most recent incident #{most_recent.id}"
+                        f"[FIND][{trace_id}] No meaningful content extracted, associating with most recent incident #{most_recent.id}"
                     )
                     return most_recent.id
                 return None
@@ -991,6 +1050,10 @@ class EventConsumer:
                 open_incident_ids = [str(incident.id) for incident in recent_incidents]
 
                 if open_incident_ids:
+                    logger.debug(
+                        f"[FIND][{trace_id}] Looking for similar incidents among IDs: {open_incident_ids}"
+                    )
+
                     # Create filter condition
                     filter_condition = {
                         "must": [
@@ -999,31 +1062,53 @@ class EventConsumer:
                     }
 
                     # Find similar incidents
-                    similar_incidents = await similarity_service.find_similar_incidents(
-                        query_text=event_text,
-                        limit=3,
-                        filter_condition=filter_condition,
-                    )
+                    try:
+                        similar_incidents = (
+                            await similarity_service.find_similar_incidents(
+                                query_text=event_text,
+                                limit=3,
+                                filter_condition=filter_condition,
+                            )
+                        )
 
-                    # Check if any incident has high similarity (threshold: 0.75)
-                    for similar in similar_incidents:
-                        if similar.get("similarity_score", 0) > 0.75:
-                            incident_id = similar.get("incident_id")
-                            if incident_id:
-                                logger.info(
-                                    f"Found similar incident #{incident_id} with score {similar['similarity_score']:.2f}"
-                                )
-                                return int(incident_id)
+                        # Log the results
+                        for idx, similar in enumerate(similar_incidents):
+                            logger.debug(
+                                f"[FIND][{trace_id}] Similar incident #{idx+1}: ID={similar.get('incident_id')}, score={similar.get('similarity_score', 0):.2f}"
+                            )
+
+                        # Check if any incident has high similarity (threshold: 0.75)
+                        for similar in similar_incidents:
+                            if similar.get("similarity_score", 0) > 0.75:
+                                incident_id = similar.get("incident_id")
+                                if incident_id:
+                                    logger.info(
+                                        f"[FIND][{trace_id}] Found similar incident #{incident_id} with score {similar['similarity_score']:.2f}"
+                                    )
+                                    return int(incident_id)
+                    except Exception as similarity_error:
+                        logger.error(
+                            f"[FIND][{trace_id}] Error in similarity search: {str(similarity_error)}"
+                        )
+                        # Continue to keyword matching as fallback
 
                     logger.debug(
-                        f"No sufficiently similar incidents found with similarity search"
+                        f"[FIND][{trace_id}] No sufficiently similar incidents found with similarity search"
                     )
             except Exception as e:
-                logger.warning(f"Error using similarity service: {str(e)}")
+                logger.warning(
+                    f"[FIND][{trace_id}] Error using similarity service: {str(e)}"
+                )
+                # Continue to fallback method
 
             # 4. Fallback: Basic keyword matching between event and incident titles
             best_match = None
             best_score = 0
+
+            # Log that we're starting keyword matching
+            logger.debug(
+                f"[FIND][{trace_id}] Starting keyword matching for {len(recent_incidents)} incidents"
+            )
 
             # Simple keyword matching algorithm
             for incident in recent_incidents:
@@ -1043,6 +1128,9 @@ class EventConsumer:
                     union = len(incident_tokens.union(event_tokens))
                     if union > 0:
                         score = intersection / union
+                        logger.debug(
+                            f"[FIND][{trace_id}] Incident #{incident.id} match score: {score:.2f}"
+                        )
 
                 if score > best_score and score > 0.3:  # Threshold of 0.3
                     best_score = score
@@ -1050,16 +1138,21 @@ class EventConsumer:
 
             if best_match:
                 logger.info(
-                    f"Found related incident #{best_match.id} with keyword matching score {best_score:.2f}"
+                    f"[FIND][{trace_id}] Found related incident #{best_match.id} with keyword matching score {best_score:.2f}"
                 )
                 return best_match.id
 
             # 5. No good match found
-            logger.debug(f"No relevant incident found for {source}/{event_type} event")
+            logger.debug(
+                f"[FIND][{trace_id}] No relevant incident found for {source}/{event_type} event"
+            )
             return None
 
         except Exception as e:
-            logger.error(f"Error finding relevant incident: {str(e)}")
+            logger.error(
+                f"[FIND][{trace_id}] Error finding relevant incident: {str(e)}"
+            )
+            logger.exception(f"[FIND][{trace_id}] Detailed error information:")
             return None
 
     async def check_for_auto_incident_creation(
@@ -1119,7 +1212,7 @@ class EventConsumer:
                 await session.refresh(incident)
 
                 # Associate the event with this incident
-                event.incident_id = incident.id
+                event.related_incident_id = incident.id
                 await session.commit()
 
                 logger.info(
@@ -1201,7 +1294,7 @@ class EventConsumer:
         stmt = select(Event).where(
             (Event.source == event_source)
             & (Event.event_type == event_type)
-            & (Event.incident_id.is_(None))
+            & (Event.related_incident_id.is_(None))
             & (
                 Event.created_at >= datetime.utcnow() - timedelta(days=1)
             )  # Limit to last 24 hours
@@ -1216,7 +1309,7 @@ class EventConsumer:
 
         # Associate events with this incident
         for event in events:
-            event.incident_id = incident.id
+            event.related_incident_id = incident.id
             logger.debug(
                 f"[DB] Associating event ID={event.id} to incident #{incident.id}"
             )

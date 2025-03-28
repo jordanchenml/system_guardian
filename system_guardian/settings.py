@@ -63,9 +63,6 @@ class Settings(BaseSettings):
     rabbit_pool_size: int = 2
     rabbit_channel_pool_size: int = 10
 
-    # kafka_bootstrap_servers: List[str] = ["system_guardian-kafka:9092"]
-    kafka_bootstrap_servers: List[str] = ["localhost:9092"]
-
     # Qdrant Vector DB settings
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
@@ -112,6 +109,20 @@ class Settings(BaseSettings):
     jira_project_key: str = os.getenv("SYSTEM_GUARDIAN_JIRA_PROJECT_KEY", "INCIDENT")
     jira_issue_type: str = os.getenv("SYSTEM_GUARDIAN_JIRA_ISSUE_TYPE", "Bug")
     jira_timeout: int = 30  # Seconds
+
+    # 添加事件偵測的默認設置
+    # 控制是否為GitHub事件自動創建incident
+    github_auto_detect_incident: bool = (
+        os.getenv("GITHUB_AUTO_DETECT_INCIDENT", "true").lower() == "true"
+    )
+    # 控制是否為JIRA事件自動創建incident
+    jira_auto_detect_incident: bool = (
+        os.getenv("JIRA_AUTO_DETECT_INCIDENT", "false").lower() == "true"
+    )
+    # 控制是否為Datadog事件自動創建incident
+    datadog_auto_detect_incident: bool = (
+        os.getenv("DATADOG_AUTO_DETECT_INCIDENT", "true").lower() == "true"
+    )
 
     @property
     def db_url(self) -> URL:

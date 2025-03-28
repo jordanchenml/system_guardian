@@ -62,7 +62,6 @@ async def test_event_consumer_ticket_creation():
     # Create a minimal EventConsumer instance (without DB and message broker connections)
     event_consumer = EventConsumer(
         db_session_factory=None,  # No DB needed for this test
-        kafka_topics=None,
         auto_incident_creation=False,
     )
 

@@ -471,6 +471,54 @@ async def create_event_from_incident(
                 "sender": {"login": "llm-test-user"},
                 **test_metadata,
             }
+        elif event_type == "push":
+            raw_payload = {
+                "action": "push",
+                "repository": {
+                    "name": "system-services",
+                    "full_name": "org/system-services",
+                    "owner": {"login": "org"},
+                },
+                "sender": {"login": "llm-test-user"},
+                **test_metadata,
+            }
+        elif event_type == "workflow_run":
+            raw_payload = {
+                "action": "completed",
+                "workflow_run": {
+                    "name": title,
+                    "conclusion": "success",
+                    "created_at": created_at,
+                    "updated_at": created_at,
+                    "author": {"login": "llm-test-user"},
+                },
+                "repository": {
+                    "name": "system-services",
+                    "full_name": "org/system-services",
+                    "owner": {"login": "org"},
+                },
+                "sender": {"login": "llm-test-user"},
+                **test_metadata,
+            }
+        elif event_type == "release":
+            raw_payload = {
+                "action": "published",
+                "release": {
+                    "name": title,
+                    "body": description,
+                    "created_at": created_at,
+                    "published_at": created_at,
+                    "author": {"login": "llm-test-user"},
+                },
+                "repository": {
+                    "name": "system-services",
+                    "full_name": "org/system-services",
+                    "owner": {"login": "org"},
+                },
+                "sender": {"login": "llm-test-user"},
+                **test_metadata,
+            }
+
     elif source == "jira":
         issue_id = f"SYS-{random.randint(1000, 9999)}"
         priority = severity_to_jira_priority(severity)
@@ -518,7 +566,6 @@ async def create_event_from_incident(
             "alerts": [alert],
             **test_metadata,
         }
-
     # Create the standardized event format for sending to API
     return {
         "source": source,

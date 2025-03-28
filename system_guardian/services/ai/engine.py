@@ -241,8 +241,8 @@ class AIEngine:
                 logger.warning(f"Incident with ID {incident_id} not found")
                 return None
 
-            # Get related events
-            events_query = select(Event).where(Event.incident_id == incident_id)
+            # Get all related events
+            events_query = select(Event).where(Event.related_incident_id == incident_id)
             events_result = await db_session.execute(events_query)
             related_events = events_result.scalars().all()
             logger.debug(

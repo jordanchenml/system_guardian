@@ -8,7 +8,6 @@ from openai import AsyncOpenAI
 
 from system_guardian.db.meta import meta
 from system_guardian.db.models import load_all_models
-from system_guardian.services.kafka.lifetime import init_kafka, shutdown_kafka
 from system_guardian.services.rabbit.lifetime import init_rabbit, shutdown_rabbit
 from system_guardian.services.consumers.event_consumer import EventConsumer
 from system_guardian.services.ai.engine import AIEngine
@@ -136,8 +135,143 @@ async def get_ai_engine():
 
 
 async def _create_tables() -> None:  # pragma: no cover
-    """Populate tables with predefined data."""
+    """Create database tables based on model definitions if they don't exist."""
+    from loguru import logger
+    from sqlalchemy import text
+    from system_guardian.db.base import Base
+    from system_guardian.settings import settings
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    # Load all models
     load_all_models()
+
+    # Create engine for table operations
+    engine = create_async_engine(str(settings.db_url), echo=False)
+
+    try:
+        logger.info("Checking and creating database tables if they don't exist...")
+        # Create all tables defined in models
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        # Verify important tables
+        async with engine.connect() as conn:
+            # Check events table
+            events_result = await conn.execute(
+                text(
+                    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'events')"
+                )
+            )
+            events_exists = events_result.scalar()
+
+            # Check incidents table
+            incidents_result = await conn.execute(
+                text(
+                    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'incidents')"
+                )
+            )
+            incidents_exists = incidents_result.scalar()
+
+            # Check resolutions table
+            resolutions_result = await conn.execute(
+                text(
+                    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'resolutions')"
+                )
+            )
+            resolutions_exists = resolutions_result.scalar()
+
+            # Log verification results
+            logger.info(f"Database tables verification results:")
+            logger.info(f"- events table: {'✓' if events_exists else '✗'}")
+            logger.info(f"- incidents table: {'✓' if incidents_exists else '✗'}")
+            logger.info(f"- resolutions table: {'✓' if resolutions_exists else '✗'}")
+
+            # 進一步檢查 events 表的列結構
+            if events_exists:
+                logger.info("檢查 events 表的列結構")
+                columns_result = await conn.execute(
+                    text(
+                        """
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name = 'events'
+                        """
+                    )
+                )
+                columns = [row[0] for row in columns_result.fetchall()]
+                logger.info(f"Events 表列結構: {', '.join(columns)}")
+
+                # 檢查是否存在 related_incident_id 列
+                has_related_incident_id = "related_incident_id" in columns
+                logger.info(
+                    f"related_incident_id 列存在: {'✓' if has_related_incident_id else '✗'}"
+                )
+
+                # 檢查是否存在舊的 incident_id 列（這會導致衝突）
+                has_old_incident_id = "incident_id" in columns
+                if has_old_incident_id:
+                    logger.warning("檢測到舊的 incident_id 列存在，這可能導致問題!")
+
+                    if not has_related_incident_id:
+                        # 如果沒有 related_incident_id 但有 incident_id，嘗試重命名
+                        logger.info("嘗試將 incident_id 重命名為 related_incident_id")
+                        try:
+                            # 使用事務進行列重命名
+                            await conn.execute(
+                                text(
+                                    """
+                                    BEGIN;
+                                    -- 刪除可能的外鍵約束
+                                    ALTER TABLE events DROP CONSTRAINT IF EXISTS events_incident_id_fkey;
+                                    -- 重命名列
+                                    ALTER TABLE events RENAME COLUMN incident_id TO related_incident_id;
+                                    -- 添加新的外鍵約束
+                                    ALTER TABLE events 
+                                    ADD CONSTRAINT events_related_incident_id_fkey 
+                                    FOREIGN KEY (related_incident_id) 
+                                    REFERENCES incidents(id) ON DELETE SET NULL;
+                                    COMMIT;
+                                    """
+                                )
+                            )
+                            logger.info(
+                                "成功將 incident_id 列重命名為 related_incident_id"
+                            )
+                        except Exception as rename_err:
+                            logger.error(f"重命名列時出錯: {str(rename_err)}")
+
+                # 測試 events 表的寫入功能
+                logger.info("進行 events 表寫入測試")
+                try:
+                    current_time = "NOW()"
+                    await conn.execute(
+                        text(
+                            """
+                            INSERT INTO events 
+                            (source, event_type, content, created_at) 
+                            VALUES 
+                            ('system', 'startup_test', '{"test": true}', NOW())
+                            """
+                        )
+                    )
+                    logger.info("Events 表測試寫入成功")
+
+                    # 簡單清理測試數據
+                    await conn.execute(
+                        text(
+                            """
+                            DELETE FROM events 
+                            WHERE source = 'system' AND event_type = 'startup_test'
+                            """
+                        )
+                    )
+                except Exception as test_write_err:
+                    logger.error(f"Events 表測試寫入失敗: {str(test_write_err)}")
+
+    except Exception as e:
+        logger.error(f"Error creating database tables: {str(e)}")
+    finally:
+        await engine.dispose()
 
 
 async def _start_event_consumer(app: FastAPI) -> None:  # pragma: no cover
@@ -195,7 +329,6 @@ def register_startup_event(
         _setup_ai_engine(app)
         await _create_tables()
         init_rabbit(app)
-        await init_kafka(app)
         await _start_event_consumer(app)
         app.middleware_stack = app.build_middleware_stack()
         pass  # noqa: WPS420
@@ -218,7 +351,6 @@ def register_shutdown_event(
         await _stop_event_consumer(app)
         await app.state.db_engine.dispose()
         await shutdown_rabbit(app)
-        await shutdown_kafka(app)
         pass  # noqa: WPS420
 
     return _shutdown

@@ -4,7 +4,7 @@ An AI-powered incident management platform designed to autonomously monitor, ana
 ## 🌟 Features
 - **Real-time Incident Detection**: Ingests and processes events from **Slack, GitHub, Jira**, and other sources.
 - **AI-Powered Resolution Suggestions**: Uses **GPT-4 / Llama 3** and **retrieval-based search** (Qdrant) to suggest fixes based on historical incidents.
-- **Event-Driven Architecture**: Utilizes **Kafka / RabbitMQ** for reliable message streaming and processing.
+- **Event-Driven Architecture**: Utilizes **RabbitMQ** for reliable message streaming and processing.
 - **Scalable & Modular**: Microservice-based structure with **FastAPI**, **PostgreSQL**, and **Elasticsearch**.
 - **Monitoring & Logging**: Tracks incidents, logs, and system health using **Datadog & ELK stack**.
 
@@ -24,9 +24,6 @@ system_guardian
 │   ├── vector_db         # Vector database services
 │   │   ├── qdrant_client.py        # Qdrant client for vector storage
 │   │   ├── dependencies.py         # Dependency injection for Qdrant
-│   ├── kafka             # Kafka integration
-│   │   ├── producer.py   # Publishes events to Kafka
-│   │   ├── consumer.py   # Processes incoming messages from Kafka
 │   ├── ingest            # Data ingestion services
 │   │   ├── message_publisher.py    # Service for publishing messages
 │   ├── rabbit            # RabbitMQ integration
@@ -74,7 +71,6 @@ Create a .env file and configure the necessary settings:
 
 ```bash
 DATABASE_URL=postgresql://user:password@localhost:5432/system_guardian
-KAFKA_BROKER=kafka://localhost:9092
 RABBITMQ_URL=amqp://user:password@localhost:5672
 OPENAI_API_KEY=your-openai-api-key
 SLACK_BOT_TOKEN=your-slack-bot-token

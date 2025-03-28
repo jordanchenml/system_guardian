@@ -7,9 +7,8 @@ import json
 from datetime import datetime
 
 from loguru import logger
-from aio_pika import Channel, Message
+from aio_pika import Channel, Message, ExchangeType, DeliveryMode
 from aio_pika.pool import Pool
-from aiokafka import AIOKafkaProducer
 
 # Import Slack notification components
 from system_guardian.services.slack.client import SlackClient
@@ -47,18 +46,17 @@ class MessagePublisher:
     @staticmethod
     def sanitize_topic_name(topic: str) -> str:
         """
-        Sanitize the topic name to make it valid for Kafka.
+        Sanitize the topic name.
 
-        Kafka topic names can only include letters, numbers, dots, underscores, and hyphens.
         This method replaces any invalid characters with underscores.
 
         :param topic: The raw topic name
-        :returns: A sanitized topic name that is valid for Kafka
+        :returns: A sanitized topic name
         """
         # Replace all non-alphanumeric characters except dots, underscores, and hyphens with underscores
         sanitized = re.sub(r"[^a-zA-Z0-9\._-]", "_", topic)
 
-        # Ensure the topic name doesn't start with a dot or underscore (Kafka recommendation)
+        # Ensure the topic name doesn't start with a dot or underscore
         if sanitized and sanitized[0] in [".", "_"]:
             sanitized = "topic" + sanitized
 
@@ -98,52 +96,6 @@ class MessagePublisher:
         return False
 
     @staticmethod
-    async def send_to_kafka(
-        producer: AIOKafkaProducer,
-        event_message,
-        topic: Optional[str] = None,
-    ) -> None:
-        """
-        Send a message to Kafka.
-
-        :param producer: Kafka producer instance
-        :param event_message: The standardized event message
-        :param topic: Optional kafka topic, if not provided uses a simplified topic strategy
-        """
-        if not topic:
-            # Use a simpler topic strategy - one topic per source
-            # This avoids having to create many different topics in Kafka
-            if event_message.source in MessagePublisher.DEFAULT_TOPICS:
-                topic = MessagePublisher.DEFAULT_TOPICS[event_message.source]
-            else:
-                # Fallback to a generic topic
-                topic = "webhook_events"
-
-            logger.debug(
-                f"Using topic '{topic}' for event from source '{event_message.source}'"
-            )
-        else:
-            # If a topic was provided, still ensure it's valid
-            sanitized_topic = MessagePublisher.sanitize_topic_name(topic)
-            if topic != sanitized_topic:
-                logger.warning(
-                    f"Provided topic name '{topic}' was sanitized to '{sanitized_topic}'"
-                )
-                topic = sanitized_topic
-
-        try:
-            # Simplified logging, only show details at DEBUG level
-            logger.debug(f"Sending message to Kafka topic: {topic}")
-            await producer.send(
-                topic=topic,
-                value=event_message.to_json().encode("utf-8"),
-            )
-            # No longer output success message to reduce log volume
-        except Exception as e:
-            logger.error(f"Failed to send message to Kafka: {str(e)}")
-            # Consider retrying or storing for later processing
-
-    @staticmethod
     async def send_to_rabbitmq(
         channel_pool: Pool[Channel],
         event_message,
@@ -154,26 +106,55 @@ class MessagePublisher:
         Send a message to RabbitMQ.
 
         :param channel_pool: RabbitMQ channel pool
-        :param event_message: The standardized event message
+        :param event_message: The standardized event message (object or dict)
         :param exchange_name: The exchange to publish to
         :param routing_key: Optional routing key, if not provided uses source.eventtype format
         """
         if not routing_key:
-            # Generate routing key based on source and event type
-            routing_key = f"{event_message.source}.{event_message.event_type}"
+            # 檢查是否為字典格式
+            if isinstance(event_message, dict):
+                source = event_message.get("source", "unknown")
+                event_type = event_message.get("event_type", "unknown")
+                # Generate routing key based on source and event type
+                routing_key = f"{source}.{event_type}"
+            else:
+                # 原來的物件格式
+                # Generate routing key based on source and event type
+                routing_key = f"{event_message.source}.{event_message.event_type}"
 
         try:
             logger.info(f"Sending message to RabbitMQ: {exchange_name}/{routing_key}")
             async with channel_pool.acquire() as conn:
                 exchange = await conn.declare_exchange(
                     name=exchange_name,
-                    auto_delete=True,
+                    type=ExchangeType.TOPIC,
+                    durable=False,
+                    auto_delete=False,
                 )
+
+                # 準備消息內容
+                message_body = event_message
+                if not isinstance(event_message, str):
+                    if isinstance(event_message, dict):
+                        message_body = json.dumps(event_message).encode("utf-8")
+                    else:
+                        # 如果是物件且有to_json方法
+                        if hasattr(event_message, "to_json") and callable(
+                            event_message.to_json
+                        ):
+                            message_body = event_message.to_json().encode("utf-8")
+                        else:
+                            # 嘗試直接轉換為JSON
+                            message_body = json.dumps(event_message.__dict__).encode(
+                                "utf-8"
+                            )
+
                 await exchange.publish(
                     message=Message(
-                        body=event_message.to_json().encode("utf-8"),
+                        body=message_body,
                         content_encoding="utf-8",
                         content_type="application/json",
+                        delivery_mode=DeliveryMode.PERSISTENT,
                     ),
                     routing_key=routing_key,
                 )
@@ -186,7 +167,6 @@ class MessagePublisher:
 
     @staticmethod
     async def publish_incident_detection(
-        kafka_producer: Optional[AIOKafkaProducer],
         rmq_channel_pool: Optional[Pool[Channel]],
         event_message,
         incident_id: int,
@@ -195,7 +175,6 @@ class MessagePublisher:
         """
         Publish a notification that an incident was detected from an event.
 
-        :param kafka_producer: Kafka producer for long-term storage
         :param rmq_channel_pool: RabbitMQ channel pool for real-time notifications
         :param event_message: The original event message that triggered the incident
         :param incident_id: The ID of the newly created incident
@@ -230,13 +209,16 @@ class MessagePublisher:
                 async with rmq_channel_pool.acquire() as conn:
                     exchange = await conn.declare_exchange(
                         name=MessagePublisher.INCIDENT_EXCHANGE,
-                        auto_delete=False,  # Keep exchange even without bindings
+                        type=ExchangeType.DIRECT,
+                        durable=False,
+                        auto_delete=False,
                     )
                     await exchange.publish(
                         message=Message(
                             body=json.dumps(incident_payload).encode("utf-8"),
                             content_encoding="utf-8",
                             content_type="application/json",
+                            delivery_mode=DeliveryMode.PERSISTENT,
                         ),
                         routing_key=MessagePublisher.INCIDENT_ROUTING_KEY,
                     )
@@ -244,18 +226,6 @@ class MessagePublisher:
                 logger.error(
                     f"Failed to publish incident notification to RabbitMQ: {str(e)}"
                 )
-
-        # 完全停止使用Kafka，即使提供了kafka_producer參數
-        # if kafka_producer:
-        #     try:
-        #         # Simplified logging
-        #         logger.info(f"Storing incident #{incident_id} record in Kafka")
-        #         await kafka_producer.send(
-        #             topic=MessagePublisher.INCIDENT_TOPIC,
-        #             value=json.dumps(incident_payload).encode("utf-8"),
-        #         )
-        #     except Exception as e:
-        #         logger.error(f"Failed to store incident record in Kafka: {str(e)}")
 
         # Send Slack notification directly
         try:
@@ -367,29 +337,32 @@ class MessagePublisher:
     @staticmethod
     async def publish_event(
         event_message,
-        kafka_producer: Optional[AIOKafkaProducer] = None,
         rmq_channel_pool: Optional[Pool[Channel]] = None,
+        auto_detect_incident: bool = True,
     ) -> None:
         """
-        Publish an event to message queues based on event characteristics.
+        Publish an event to RabbitMQ message queue.
 
         :param event_message: The standardized event message
-        :param kafka_producer: Optional Kafka producer
         :param rmq_channel_pool: Optional RabbitMQ channel pool
+        :param auto_detect_incident: Whether to automatically detect incidents from this event
         """
         tasks = []
 
-        # 僅使用RabbitMQ來處理事件表插入
-        # 不再使用Kafka作為事件處理的主要通道
-        if rmq_channel_pool:
-            # 所有事件都使用標準路由鍵發送到RabbitMQ
-            tasks.append(
-                MessagePublisher.send_to_rabbitmq(rmq_channel_pool, event_message)
-            )
+        # 為事件添加auto_detect_incident標記
+        event_message_dict = event_message.model_dump()
+        event_message_dict["auto_detect_incident"] = auto_detect_incident
 
-        # 完全停止使用Kafka，即使提供了kafka_producer也不使用
-        # if kafka_producer:
-        #     tasks.append(MessagePublisher.send_to_kafka(kafka_producer, event_message))
+        logger.info(
+            f"Publishing event from {event_message.source} with auto_detect_incident={auto_detect_incident}"
+        )
+
+        # 使用RabbitMQ處理事件
+        if rmq_channel_pool:
+            # 事件發送到RabbitMQ
+            tasks.append(
+                MessagePublisher.send_to_rabbitmq(rmq_channel_pool, event_message_dict)
+            )
 
         if tasks:
             # Run all publishing tasks concurrently

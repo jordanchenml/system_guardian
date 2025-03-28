@@ -23,8 +23,6 @@ SQLAlchemy = {version = "^2.0.18", extras = ["asyncio"]}
 asyncpg = {version = "^0.28.0", extras = ["sa"]}
 aio-pika = "^9.1.4"
 loguru = "^0.7.0"
-aiokafka = "^0.8.1"
-kafka-python = "2.0.2"
 openai = "1.55.2"
 langchain-community = "0.3.7"
 langchain-openai = "0.2.9"
@@ -99,7 +97,6 @@ env = [
 # enable_kube = "None"
 # kube_name = "system-guardian"
 # enable_routers = "True"
-# enable_kafka = "True"
 # enable_loguru = "True"
 # traefik_labels = "None"
 # add_dummy = "None"
@@ -114,3 +111,14 @@ env = [
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+# System Guardian optional dependencies management
+[tool.poetry.extras]
+all = ["aio-pika", "aiofiles", "asyncpg", "openai", "pytest", "rich", "uvicorn"]
+api = ["fastapi", "pydantic", "uvicorn"]
+async = ["asyncio", "aiofiles", "anyio"]
+db = ["sqlalchemy", "asyncpg", "alembic"]
+dev = ["pytest", "isort", "black", "mypy", "autoflake", "flake8"]
+http = ["httpx", "aiohttp", "fastapi"]
+mq = ["aio-pika"]
+vector = ["qdrant-client", "numpy", "openai"]

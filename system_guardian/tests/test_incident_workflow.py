@@ -56,16 +56,13 @@ async def simulate_event_triggering_incident():
         "description": "The primary database connection has failed. Multiple services are affected including API, web, and authentication services. Errors have been occurring for the last 5 minutes.",
     }
 
-    # Create Kafka producer and RMQ channel arguments as None
-    # In a real scenario these would be actual connections
-    kafka_producer = None
+    # 創建RMQ通道池（實際場景中會是真實連接）
     rmq_channel_pool = None
 
     logger.info(f"Triggering incident notification flow for incident #{incident_id}")
 
-    # Call the publish_incident_detection method directly
+    # 調用發布事件通知方法
     await MessagePublisher.publish_incident_detection(
-        kafka_producer=kafka_producer,
         rmq_channel_pool=rmq_channel_pool,
         event_message=event,
         incident_id=incident_id,

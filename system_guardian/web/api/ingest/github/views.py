@@ -6,15 +6,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Header, Request, Depends, BackgroundTasks
 from loguru import logger
-from aiokafka import AIOKafkaProducer
 from aio_pika import Channel
 from aio_pika.pool import Pool
 
 from system_guardian.web.api.ingest.github.schema import Message
 from system_guardian.web.api.ingest.schema import StandardEventMessage
 from system_guardian.services.ingest import MessagePublisher
-from system_guardian.services.kafka.dependencies import get_kafka_producer
 from system_guardian.services.rabbit.dependencies import get_rmq_channel_pool
+from system_guardian.settings import settings
 
 router = APIRouter()
 
@@ -24,7 +23,6 @@ async def process_github_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
     x_github_event: Optional[str] = Header(None, alias="X-GitHub-Event"),
-    kafka_producer: Optional[AIOKafkaProducer] = Depends(get_kafka_producer),
     rmq_channel_pool: Optional[Pool[Channel]] = Depends(get_rmq_channel_pool),
 ) -> Message:
     """
@@ -37,7 +35,6 @@ async def process_github_webhook(
     :param request: The incoming request object
     :param background_tasks: FastAPI background tasks object for async processing
     :param x_github_event: GitHub event type from X-GitHub-Event header
-    :param kafka_producer: Kafka producer dependency
     :param rmq_channel_pool: RabbitMQ channel pool dependency
     :returns: message indicating successful processing
     """
@@ -71,6 +68,10 @@ async def process_github_webhook(
         # Log the parsed payload for debugging
         logger.debug(f"Successfully parsed GitHub payload: {body}")
 
+        # 從設置中獲取GitHub事件是否自動創建incident的默認值
+        auto_detect_incident = settings.github_auto_detect_incident
+        logger.info(f"GitHub auto_detect_incident set to: {auto_detect_incident}")
+
         # Create standardized event message
         event_message = StandardEventMessage(
             source="github",
@@ -85,8 +86,8 @@ async def process_github_webhook(
         background_tasks.add_task(
             MessagePublisher.publish_event,
             event_message=event_message,
-            kafka_producer=kafka_producer,
             rmq_channel_pool=rmq_channel_pool,
+            auto_detect_incident=auto_detect_incident,
         )
 
         # Return the processed message
