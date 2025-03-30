@@ -1,58 +1,20 @@
-# System Guardian 🚀
+# System Guardian 🛡️
+
 An AI-powered incident management platform designed to autonomously monitor, analyze, and suggest resolutions for on-call incidents. System Guardian integrates with tools like Slack, GitHub, Datadog, and more to provide **real-time insights** and **AI-driven remediation suggestions**.
 
 ## 🌟 Features
-- **Real-time Incident Detection**: Ingests and processes events from **Slack, GitHub, Jira**, and other sources.
-- **AI-Powered Resolution Suggestions**: Uses **GPT-4 / Llama 3** and **retrieval-based search** (Qdrant) to suggest fixes based on historical incidents.
-- **Event-Driven Architecture**: Utilizes **RabbitMQ** for reliable message streaming and processing.
-- **Scalable & Modular**: Microservice-based structure with **FastAPI**, **PostgreSQL**, and **Elasticsearch**.
-- **Monitoring & Logging**: Tracks incidents, logs, and system health using **Datadog & ELK stack**.
+
+- **Real-time Incident Detection**: Ingests and processes events from **Datadog, GitHub, Jira**, and other sources
+- **AI-Powered Resolution Suggestions**: Uses **GPT-4o / GTP-4o-mini** and **retrieval-based search** with **Qdrant** to suggest fixes based on historical incidents
+- **Event-Driven Architecture**: Utilizes **RabbitMQ** for reliable message streaming and processing
+- **Scalable & Modular**: Microservice-based structure with **FastAPI**, **PostgreSQL**, and **Elasticsearch**
+- **Monitoring & Logging**: Tracks incidents, logs, and system health using **Datadog & ELK stack**
 
 ---
 
-## 📁 Project Structure
-```bash
-system_guardian
-├── conftest.py           # Fixtures for all tests
-├── db                    # Database configurations and models
-│   ├── dao               # Data Access Objects (Interacts with the database)
-│   └── models            # ORM models for database tables
-├── __main__.py           # Startup script (Launches FastAPI with Uvicorn)
-├── services              # External service integrations and services
-│   ├── ai                # AI-related services
-│   │   ├── incident_similarity.py  # Finding similar incidents with embeddings
-│   ├── vector_db         # Vector database services
-│   │   ├── qdrant_client.py        # Qdrant client for vector storage
-│   │   ├── dependencies.py         # Dependency injection for Qdrant
-│   ├── ingest            # Data ingestion services
-│   │   ├── message_publisher.py    # Service for publishing messages
-│   ├── rabbit            # RabbitMQ integration
-├── settings.py           # Main project configuration (DB, API keys, environment variables)
-├── static                # Static content (if needed)
-├── tests                 # Unit and integration tests
-└── web                   # Web server and API endpoints
-    ├── api               # REST API handlers
-    │   ├── router.py     # Main API router
-    │   ├── ingest        # API for ingesting events from external sources
-    │   │   ├── github    # GitHub webhook handlers
-    │   │   ├── jira      # Jira webhook handlers
-    │   ├── incidents     # Incident retrieval and analysis API
-    │   │   ├── schema.py # Incident API schemas
-    │   │   ├── views.py  # Incident API endpoint handlers
-    │   ├── vector_db     # Vector database API
-    │   │   ├── schema.py # Vector DB API schemas
-    │   │   ├── views.py  # Vector DB API endpoint handlers
-    │   ├── monitoring    # System monitoring endpoints
-    ├── application.py    # FastAPI application setup
-    └── lifetime.py       # Startup and shutdown tasks
-```
+## 🚀 Getting Started
 
-
-⸻
-
-🚀 Getting Started
-
-1️⃣ Installation
+### 1️⃣ Installation
 
 Clone the repository and set up the environment:
 
@@ -62,40 +24,60 @@ cd system_guardian
 python -m venv venv
 source venv/bin/activate  # For macOS/Linux
 venv\Scripts\activate     # For Windows
-pip install -r requirements.txt
+pip install poetry
+poetry install
 ```
 
-2️⃣ Environment Configuration
+### 2️⃣ Environment Configuration
 
-Create a .env file and configure the necessary settings:
+Create a `.env` file in the project root directory and configure the necessary settings:
 
 ```bash
-DATABASE_URL=postgresql://user:password@localhost:5432/system_guardian
-RABBITMQ_URL=amqp://user:password@localhost:5672
+SYSTEM_GUARDIAN_DB_HOST=localhost
+SYSTEM_GUARDIAN_DB_PORT=5432
+SYSTEM_GUARDIAN_DB_USER=system_guardian
+SYSTEM_GUARDIAN_DB_PASS=system_guardian
+SYSTEM_GUARDIAN_DB_BASE=system_guardian
+SYSTEM_GUARDIAN_RABBIT_HOST=localhost
 OPENAI_API_KEY=your-openai-api-key
 SLACK_BOT_TOKEN=your-slack-bot-token
 GITHUB_WEBHOOK_SECRET=your-github-webhook-secret
-DATADOG_API_KEY=your-datadog-api-key
-QDRANT_HOST=localhost
-QDRANT_PORT=6333
+SYSTEM_GUARDIAN_QDRANT_HOST=localhost
+SYSTEM_GUARDIAN_QDRANT_PORT=6333
 ```
 
-3️⃣ Run the Application
+### 3️⃣ Run the Application
 
-Start the services and run the FastAPI server:
+#### Development Environment
+
+Start the development environment services (Database, RabbitMQ, Qdrant) using Docker Compose:
+
+```bash
+docker-compose -f deploy/docker-compose.dev.yml up --build
+```
+
+Then run the FastAPI service locally:
 
 ```bash
 poetry run python -m system_guardian
 ```
 
-Or use Docker Compose to spin up the full environment:
+#### Production Environment
+
+Start the complete production environment (including all services) using Docker Compose from the project root directory:
 
 ```bash
-docker-compose up --build
+docker-compose -f deploy/docker-compose.yml up --build
 ```
 
+This will launch the following services:
+- API service (system_guardian)
+- Event consumer service (event_consumer_service)
+- PostgreSQL database
+- RabbitMQ message queue
+- Qdrant vector database
 
-⸻
+---
 
 ## 📊 Visualization Interfaces
 
@@ -127,46 +109,22 @@ The RabbitMQ management interface allows you to monitor and manage the message q
   - Manage users and permissions
   - View performance metrics and system resource usage
 
+### FastAPI Swagger Documentation
+
+FastAPI's auto-generated API documentation interface:
+
+- **Access URL**: [http://localhost:8000/api/docs](http://localhost:8000/api/docs)
+
 These visualization interfaces greatly simplify the development and debugging process, allowing you to intuitively understand the operational status of the system.
 
-⸻
+---
 
-## 🔥 API Endpoints
+## 📝 Contributing
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| /api/ingest/slack | POST | Ingests Slack messages for incident detection |
-| /api/ingest/github | POST | Captures GitHub events (PRs, Issues, Deployments) |
-| /api/ingest/datadog | POST | Processes Datadog alerts |
-| /api/ingest/jira | POST | Captures Jira events (Issues, Comments) |
-| /api/incidents/similar | POST | Find incidents similar to a query text |
-| /api/incidents/index | POST | Index an incident for similarity search |
-| /api/vector-db/collections | GET | List all vector collections |
-| /api/vector-db/collections/{name} | GET | Get details of a specific collection |
-| /api/vector-db/collections/{name} | POST | Create a new vector collection |
-| /api/monitoring/health | GET | Health check endpoint to verify system status |
-| /api/resolution | POST | AI-driven resolution suggestions |
-| /api/health | GET | Health check |
+Contributions are welcome! Please check out our [contribution guidelines](CONTRIBUTING.md) to learn how to participate in this project.
 
+## 📄 License
 
-⸻
-
-🛠️ Development
-
-Testing
-
-Run unit tests using pytest:
-
-```bash
-pytest tests/
-```
-Linting & Formatting
-
-Ensure code consistency with black and flake8:
-
-```bash
-black .
-flake8 .
-```
+This project is released under the [MIT License](LICENSE).
 
 

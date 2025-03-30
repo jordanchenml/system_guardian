@@ -1,130 +1,183 @@
-# AI 驅動的事件解決方案系統
+# System Guardian Technical Architecture Document
 
-## 系統概述
+## Overview
 
-本文檔描述了 System Guardian 的 AI 驅動事件解決方案系統的技術架構。該系統能夠自動分析事件，生成解決方案建議，並隨著時間的推移從反饋中學習和改進。
+System Guardian is an AI-driven incident management platform designed to autonomously monitor, analyze, and provide solution recommendations for on-call incidents. This platform integrates with Slack, GitHub, Jira, Datadog, and other tools to provide real-time insights and AI-driven remediation suggestions.
 
-## 架構組件
+## Technical Architecture
 
-### 1. 數據模型
+### Data Extraction and Processing Flow
 
-系統使用以下關鍵數據模型：
+System Guardian uses an event-driven microservices architecture to extract event data from multiple sources:
 
-- **Incident**: 表示一個需要解決的系統事件，包含標題、描述、嚴重性、狀態和來源等信息。
-- **Event**: 表示與事件相關的各種事件，如 GitHub 提交、Datadog 警報、Jira 工單等。每個事件都包含特定的元數據。
-- **Resolution**: 表示為事件生成的解決方案，包含建議、置信度、是否已應用和用戶反饋等。
+1. **Multi-source Data Extraction**
+   - **GitHub Integration**: Monitor code commits, issues, and deployment events
+   - **Jira Integration**: Track issues and comments
+   - **Datadog Integration**: Handle system alerts and monitoring data
+   - **Technical Documentation Integration**: Support uploading technical documentation to Qdrant vector database as a knowledge base reference for AI solution generation, improving the accuracy and reliability of AI solutions
 
-### 2. AI 引擎
+2. **Uniform Message Specification**
+   - Implement a uniform event model (Event model), converting data from different sources into standard format
+   - Use JSONB data type to save complete original event content, ensuring context completeness
+   - Implement cross-platform event classification through standardized source, event_type fields
+   - Internal message conversion layer ensures consistent processing of external events
 
-AI 引擎是系統的核心組件，負責：
+3. **Event Processing Flow**
+   - Use RabbitMQ as a message queue to ensure event processing reliability
+   - Event consumption service (EventConsumerService) is responsible for extracting and processing events from the queue
+   - Standardize event data and store it in the PostgreSQL database
 
-- 嵌入生成：將事件和相關數據轉換為向量嵌入，用於相似性搜索
-- 文本生成：使用 OpenAI 的 LLM 模型生成解決方案
-- 向量搜索：在數據庫中查找相似的過去事件和解決方案
+4. **Event Analysis and Response Mechanism**
+   - System automatically analyzes event data to identify potential incidents
+   - Once an incident is confirmed, it immediately sends a notification to the relevant team via Slack robot
+   - At the same time, it automatically creates a Jira ticket to track resolution progress
+   - Based on incident context and historical data, it generates preliminary resolution suggestion (Resolution) immediately
+   - Track notification and response status throughout the process for subsequent optimization
 
-### 3. 服務組件
+5. **Data Standardization**
+   - Convert data from different sources into a unified event and incident model
+   - Establish the relationship between events and incidents to build a complete incident context
 
-主要服務組件包括：
+### AI-driven Analysis and Insights
 
-- **ResolutionGenerator**: 負責生成和管理解決方案的核心類
-  - 獲取事件詳情和相關聯的數據
-  - 搜索相似的過去事件
-  - 使用 LLM 分析數據並生成解決方案
-  - 存儲和管理解決方案
-  
-- **IncidentSimilarityService**: 負責查找相似事件
-  - 使用向量相似性搜索找到相似的過去事件
-  - 分析事件之間的關係
+1. **AI Engine Architecture**
+   - Core AIEngine class provides vector embedding, text generation, and similarity search functionality
+   - Supports multiple LLM models (GPT-4o / GPT-4o mini), and can switch based on demand
+   - Use OpenAI Embeddings API to generate vector representations
 
-### 4. API 端點
+2. **Vector Database Integration**
+   - Use Qdrant vector database to store event embeddings
+   - Support uploading technical documentation, converting it into vector embeddings and storing it to build a professional knowledge base
+   - Generate solution suggestions automatically query related technical documentation fragments, providing more valuable suggestions
+   - Implement efficient similarity search to find similar historical events and related documents
 
-系統提供以下主要 API 端點：
+3. **AI Analysis Service**
+   - **Incident Detector (IncidentDetector)**: Automatically identify potential events
+   - **Incident Analyzer (IncidentAnalyzer)**: Deeply analyze event causes and impacts
+   - **Severity Classifier (SeverityClassifier)**: Evaluate event severity
+   - **Similarity Engine (IncidentSimilarity)**: Identify related historical events
 
-- **/ai-engine/generate-resolution**: 為特定事件生成解決方案
-- **/ai-engine/resolutions/{resolution_id}/apply**: 將解決方案標記為已應用
-- **/ai-engine/resolutions/{resolution_id}/feedback**: 為解決方案提供反饋
-- **/ai-engine/resolutions/incident/{incident_id}**: 獲取事件的所有解決方案
+4. **Solution Generation**
+   - **Solution Generator (ResolutionGenerator)**: Based on historical data, technical documentation, and context to generate remediation suggestions
+   - **Knowledge Retrieval (KnowledgeRetrieval)**: Query related technical documentation fragments from vector database as reference for solution generation
+   - **Report Generator (ReportGenerator)**: Automatically generate event reports and summaries, and reference related technical documentation information
 
-## 工作流程
+### API Endpoints and Services
 
-1. **事件檢測**:
-   - 系統從各種來源（如 Datadog、GitHub、Jira）接收事件
-   - 根據預定義的規則或 AI 分析確定事件是否構成事件
-   - 如果構成事件，則創建一個新的 Incident 記錄
+System Guardian provides a series of REST API endpoints for integration with other systems:
 
-2. **解決方案生成**:
-   - 系統分析事件的詳細信息
-   - 查找相似的過去事件，考慮過去的解決方案
-   - 使用 LLM 生成定制的解決方案建議
-   - 計算解決方案的置信度得分
+1. **Data Extraction API**
+   - `/api/ingest/github`: Receive GitHub events
+   - `/api/ingest/datadog`: Handle Datadog alerts
+   - `/api/ingest/jira`: Receive Jira events
+   - `/api/vector-db/knowledge/upload`: Upload technical documentation to vector database as knowledge base
 
-3. **解決方案應用和反饋**:
-   - 用戶查看生成的解決方案
-   - 用戶可以標記解決方案為已應用
-   - 用戶可以提供反饋評分和評論
-   - 系統記錄反饋以改進未來的解決方案
+2. **Solution and Event Management API**
+   - `/api/ai/generate-resolution`: Use AI to generate event resolution suggestion
+   - `/api/ai/resolutions/{resolution_id}/apply`: Mark solution as applied
+   - `/api/ai/resolutions/{resolution_id}/feedback`: Provide solution feedback
+   - `/api/ai/resolutions/incident/{incident_id}`: Get all solutions for a specific event
+   - `/api/ai/related-incidents`: Find similar historical events and provide insights
 
-## 數據流
+3. **Report and Analysis API**
+   - `/api/ai/generate-incident-report`: Generate detailed event report
+   - `/api/ai/generate-summary-report`: Generate summary report for a time period
+   - `/api/ai/generate-recommendations`: Generate operational suggestions based on event history
+   - `/api/ai/metrics`: Get AI engine performance metrics
 
-1. **輸入數據源**:
-   - Datadog：性能指標、警報和日誌
-   - GitHub：代碼提交、問題和拉取請求
-   - Jira：問題報告和更新
-   - Slack：團隊溝通和事件討論
+4. **Advanced Analysis API**
+   - `/api/ai/analytics/resolution-time/{time_range}`: Analyze resolution time statistics
+   - `/api/ai/analytics/common-failures`: Identify common failure patterns
+   - `/api/ai/analytics/ai-effectiveness`: Evaluate AI suggestion effectiveness
+   - `/api/ai/analytics/trend-report`: Generate trend analysis report
+   - `/api/ai/analytics/root-cause-analysis`: Perform deep root cause analysis
 
-2. **數據處理**:
-   - 數據標準化：將來自不同來源的數據轉換為統一格式
-   - 數據豐富：添加元數據和上下文信息
-   - 向量化：將文本數據轉換為向量嵌入
 
-3. **輸出數據**:
-   - 解決方案建議：結構化為根本原因分析、解決步驟、驗證和預防措施
-   - 置信度評分：反映系統對解決方案有效性的確信程度
-   - 相關事件列表：與當前事件相似的過去事件
-   - 用戶反饋指標：衡量解決方案的有效性
+## Data Model
 
-## 技術選擇
+System Guardian uses SQLAlchemy ORM to define the following core models:
 
-1. **AI 模型**:
-   - 嵌入模型：OpenAI 的嵌入模型，用於生成向量表示
-   - 生成模型：OpenAI 的 GPT 模型，用於生成解決方案文本
-   - 相似性搜索：使用向量數據庫進行高效的相似性搜索
+1. **Incident**
+   - Represents system issues, including title, description, severity, and status
+   - Establish associations with triggered events and related events
 
-2. **數據庫**:
-   - 關係型數據庫：用於存儲事件、事件和解決方案數據
-   - 向量數據庫：用於存儲和搜索向量嵌入
+2. **Event**
+   - Event data from various sources
+   - Contains source, event type, and complete event content
+   - Uniform event model ensures consistent processing of data from different sources
 
-3. **消息系統**:
-   - RabbitMQ：用於事件流處理
-   - Qdrant：用於向量數據庫和相似性搜索
+3. **Resolution**
+   - AI-generated or manually provided event resolution
+   - Contains suggestion text, confidence score, and user feedback
 
-## 擴展性和未來優化
+## Scalability and Reliability Design
 
-1. **短期計劃**:
-   - 改進相似事件檢索的準確性
-   - 優化解決方案生成的提示工程
-   - 實現更精細的用戶反饋系統
+1. **Scalable Service Architecture**
+   - Microservices design allows independent expansion of each component
+   - Connection pool configuration optimization ensures high concurrency processing capability
 
-2. **中期計劃**:
-   - 添加解決方案自動應用功能
-   - 開發事件解決時間預測模型
-   - 實現更詳細的事件分析和分類
+2. **Reliability Measures**
+   - RabbitMQ message queue ensures event not lost
+   - Sound error handling and retry mechanism
+   - Database connection pre-check and recycling strategy
 
-3. **長期計劃**:
-   - 使用反饋數據進行模型微調
-   - 添加多模型對比功能
-   - 開發完全自主的事件解決系統
+3. **Monitoring and Logging**
+   - Comprehensive logging using Loguru
+   - AI engine performance metric tracking
+   - Database query monitoring
 
-## 結論
+## Technical Decisions, Assumptions and Trade-offs
 
-AI 驅動的事件解決方案系統代表了運維和站點可靠性工程的重大發展。通過自動化解決方案生成，系統能夠顯著減少解決事件的時間和人力成本，同時通過用戶反饋循環不斷改進。這種架構允許系統從組織的事件歷史中學習，並將這些知識應用於未來的事件管理。
+1. **Model Selection Considerations**
+   - **Short-term**: GPT-4o/GPT-4o mini chosen for their strong context understanding capabilities and API availability
+   - **Long-term**: Plan to evaluate fine-tuned models on incident-specific data to improve accuracy and reduce costs
+   - **Trade-off**: Balance between model quality and inference cost - GPT-4o for critical incidents, GPT-4o mini for routine cases
 
-## 系統架構
+2. **Vector Database Implementation**
+   - **Decision**: Selected Qdrant over alternatives (Pinecone, Weaviate) for its performance with technical documentation
+   - **Rationale**: Qdrant offers better filtering capabilities and open-source deployment options
+   - **Trade-off**: Accepted increased operational complexity for improved query performance
 
-### 技術堆疊
+3. **Data Retention Strategy**
+   - **Short-term**: Store complete event data for comprehensive context
+   - **Long-term**: Implement intelligent data archiving based on incident relevance
+   - **Assumption**: Complete event data is crucial for high-quality AI resolution generation
+   - **Trade-off**: Higher storage costs for improved resolution quality
 
-- FastAPI：用於構建高性能Web API
-- PostgreSQL：主要數據庫
-- RabbitMQ：用於事件流處理
-- Qdrant：用於向量數據庫和相似性搜索
-- GPT-4/Llama 3：用於生成解決方案 
+4. **Real-world Deployment Considerations**
+   - **Assumption**: API rate limits may impact real-time processing during incident spikes
+   - **Mitigation**: Implement priority queuing and intelligent batching for LLM requests
+   - **Trade-off**: Accepted potential slight delays for non-critical incidents to ensure system stability
+
+## AI Effectiveness Measurement
+
+1. **Resolution Quality Metrics**
+   - **Resolution Adoption Rate**: Percentage of AI suggestions implemented by engineers
+   - **Time-to-Resolution Impact**: Comparing resolution time with and without AI assistance
+   - **Feedback Scoring System**: Engineers rate suggestions on relevance and applicability
+
+2. **Continuous Improvement Loop**
+   - Engineer feedback directly influences model training and resolution generation for future related incidents
+   - Regular model evaluation against new incident types to ensure broad coverage
+   - Periodic analysis of performance metrics to identify and address improvement opportunities
+
+## Conclusion
+
+System Guardian is a comprehensive AI-driven incident management platform that integrates multi-source data, AI analysis, and solution generation. Its event-driven architecture, uniform message specification, vector search capabilities, and advanced LLM integration enable it to effectively manage and resolve on-call incidents, reduce average resolution time, and improve operational efficiency.
+
+This system is particularly good at learning from historical events to provide relevant solution suggestions for current events and continuously optimizing its suggestion quality based on the results of event resolution. The most important thing is that the implementation of uniform message specification ensures consistent processing and analysis of data from different sources in a single system, greatly improving cross-platform event association and processing efficiency.
+
+## Future Work
+
+System Guardian team is planning the following feature enhancements to further enhance system capabilities:
+
+1. **Solution Confidence Score Redesign**
+   - The current confidence score calculation mechanism has inaccuracy issues
+   - Plan to redesign the algorithm, combining multiple indicators such as historical success rate, context similarity, and knowledge base reference degree
+   - Introduce machine learning models to dynamically adjust scores based on user feedback for continuous optimization
+
+2. **Smart Chatbot**
+   - Develop a chat interface supporting natural language interaction, allowing users to query and manage incidents through conversation
+   - Implement automatic SQL query capabilities, enabling the chatbot to automatically construct and execute database queries based on user questions
+   - Provide incident overview, solution suggestions, and historical incident analysis functions to reduce operational complexity
+   - Support cross-platform integration, expanding beyond Slack to communication platforms such as Telegram and Discord
