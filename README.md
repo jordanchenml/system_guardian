@@ -22,8 +22,7 @@ Clone the repository and set up the environment:
 git clone https://github.com/your-repo/system_guardian.git
 cd system_guardian
 python -m venv venv
-source venv/bin/activate  # For macOS/Linux
-venv\Scripts\activate     # For Windows
+source venv/bin/activate
 pip install poetry
 poetry install
 ```

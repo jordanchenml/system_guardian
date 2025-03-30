@@ -45,11 +45,9 @@ System Guardian uses an event-driven microservices architecture to extract event
    - Supports multiple LLM models (GPT-4o / GPT-4o mini), and can switch based on demand
    - Use OpenAI Embeddings API to generate vector representations
 
-2. **Vector Database Integration**
-   - Use Qdrant vector database to store event embeddings
-   - Support uploading technical documentation, converting it into vector embeddings and storing it to build a professional knowledge base
-   - Generate solution suggestions automatically query related technical documentation fragments, providing more valuable suggestions
-   - Implement efficient similarity search to find similar historical events and related documents
+2. **Vector Database**
+   - Utilizes Qdrant vector database for efficient storage and retrieval of event and knowledge embeddings
+   - Enables high-performance similarity search for finding related incidents and documents
 
 3. **AI Analysis Service**
    - **Incident Detector (IncidentDetector)**: Automatically identify potential events
@@ -134,8 +132,8 @@ System Guardian uses SQLAlchemy ORM to define the following core models:
    - **Trade-off**: Balance between model quality and inference cost - GPT-4o for critical incidents, GPT-4o mini for routine cases
 
 2. **Vector Database Implementation**
-   - **Decision**: Selected Qdrant over alternatives (Pinecone, Weaviate) for its performance with technical documentation
-   - **Rationale**: Qdrant offers better filtering capabilities and open-source deployment options
+   - **Decision**: Selected Qdrant for its lightweight nature and fast performance
+   - **Rationale**: Qdrant offers a lightweight architecture, quick response times, and open-source deployment options
    - **Trade-off**: Accepted increased operational complexity for improved query performance
 
 3. **Data Retention Strategy**
