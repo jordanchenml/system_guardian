@@ -111,14 +111,14 @@ class MessagePublisher:
         :param routing_key: Optional routing key, if not provided uses source.eventtype format
         """
         if not routing_key:
-            # 檢查是否為字典格式
+            # Check if event_message is a dictionary
             if isinstance(event_message, dict):
                 source = event_message.get("source", "unknown")
                 event_type = event_message.get("event_type", "unknown")
                 # Generate routing key based on source and event type
                 routing_key = f"{source}.{event_type}"
             else:
-                # 原來的物件格式
+                # Original object format
                 # Generate routing key based on source and event type
                 routing_key = f"{event_message.source}.{event_message.event_type}"
 
@@ -132,19 +132,19 @@ class MessagePublisher:
                     auto_delete=False,
                 )
 
-                # 準備消息內容
+                # Prepare message content
                 message_body = event_message
                 if not isinstance(event_message, str):
                     if isinstance(event_message, dict):
                         message_body = json.dumps(event_message).encode("utf-8")
                     else:
-                        # 如果是物件且有to_json方法
+                        # If it's an object with to_json method
                         if hasattr(event_message, "to_json") and callable(
                             event_message.to_json
                         ):
                             message_body = event_message.to_json().encode("utf-8")
                         else:
-                            # 嘗試直接轉換為JSON
+                            # Try to convert directly to JSON
                             message_body = json.dumps(event_message.__dict__).encode(
                                 "utf-8"
                             )
@@ -349,19 +349,21 @@ class MessagePublisher:
         """
         tasks = []
 
-        # 為事件添加auto_detect_incident標記
-        event_message_dict = event_message.model_dump()
-        event_message_dict["auto_detect_incident"] = auto_detect_incident
+        # Add auto_detect_incident flag to the event
+        event_message.auto_detect_incident = auto_detect_incident
 
         logger.info(
             f"Publishing event from {event_message.source} with auto_detect_incident={auto_detect_incident}"
         )
 
-        # 使用RabbitMQ處理事件
+        # Process with RabbitMQ
         if rmq_channel_pool:
-            # 事件發送到RabbitMQ
+            # Send event to RabbitMQ
             tasks.append(
-                MessagePublisher.send_to_rabbitmq(rmq_channel_pool, event_message_dict)
+                MessagePublisher.send_to_rabbitmq(
+                    channel_pool=rmq_channel_pool,
+                    event_message=event_message,
+                )
             )
 
         if tasks:

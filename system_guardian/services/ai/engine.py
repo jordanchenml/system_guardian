@@ -111,7 +111,7 @@ class AIEngine:
                 logger.debug("Embedding cache hit")
                 return cached_result
 
-            # 檢查 llm 客戶端是否為 None
+            # Check if llm client is None
             if self.llm is None:
                 logger.error("LLM client is None, cannot generate embedding")
                 return [0.0] * 1536  # Default embedding size

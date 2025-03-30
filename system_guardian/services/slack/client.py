@@ -26,12 +26,11 @@ class SlackClient:
         """
         Initialize Slack client.
 
-        Args:
-            token: Slack bot token
-            default_channel: Default channel to send messages to
-            username: Username to use for messages
-            icon_emoji: Emoji to use as icon for messages
-            timeout: Timeout for requests in seconds
+        :param token: Slack bot token
+        :param default_channel: Default channel to send messages to
+        :param username: Username to use for messages
+        :param icon_emoji: Emoji to use as icon for messages
+        :param timeout: Timeout for requests in seconds
         """
         self.token = token or settings.slack_bot_token
         self.default_channel = default_channel or settings.slack_channel_id
@@ -55,14 +54,11 @@ class SlackClient:
         """
         Send a message to Slack.
 
-        Args:
-            text: Message text
-            channel: Channel to send message to, defaults to default_channel
-            blocks: Slack blocks for advanced formatting
-            attachments: Slack attachments
-
-        Returns:
-            Slack API response
+        :param text: Message text
+        :param channel: Channel to send message to, defaults to default_channel
+        :param blocks: Slack blocks for advanced formatting
+        :param attachments: Slack attachments
+        :return: Slack API response
         """
         if not self._enabled:
             logger.info("Slack notifications disabled, message not sent: %s", text[:50])
@@ -124,12 +120,9 @@ class SlackClient:
         """
         Send a message using a template.
 
-        Args:
-            template: SlackMessageTemplate instance or dict with template data
-            channel: Channel to send message to, defaults to default_channel
-
-        Returns:
-            Slack API response
+        :param template: SlackMessageTemplate instance or dict with template data
+        :param channel: Channel to send message to, defaults to default_channel
+        :return: Slack API response
         """
         if isinstance(template, dict):
             try:

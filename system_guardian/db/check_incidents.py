@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-檢查incidents和events表之間的關聯狀態
+Check the relationship between incidents and events tables
 """
 
 import asyncio
@@ -9,31 +9,31 @@ from system_guardian.settings import settings
 
 
 async def check_incidents_and_events():
-    """檢查incidents和events表的關聯狀態"""
+    """Check the relationship between incidents and events tables"""
     connection_string = str(settings.db_url).replace("postgresql+asyncpg", "postgresql")
-    print(f"使用連接字符串: {connection_string}")
+    print(f"Using connection string: {connection_string}")
 
     try:
-        # 連接數據庫
+        # Connect to database
         connection = await asyncpg.connect(connection_string)
 
-        # 檢查incidents表
-        print("\n=== Incidents表情況 ===")
+        # Check incidents table
+        print("\n=== Incidents Table Status ===")
         incidents = await connection.fetch(
             "SELECT id, title, trigger_event_id FROM incidents ORDER BY id"
         )
-        print(f"總共有 {len(incidents)} 個incidents")
+        print(f"Total {len(incidents)} incidents")
 
         for incident in incidents:
             trigger_id = incident["trigger_event_id"]
-            status = "有設置" if trigger_id is not None else "沒有設置"
+            status = "Set" if trigger_id is not None else "Not set"
             title = incident["title"]
             if len(title) > 40:
                 title = title[:40] + "..."
             print(f"Incident #{incident['id']}: '{title}'")
             print(f"  trigger_event_id: {trigger_id} ({status})")
 
-            # 如果有trigger_event_id，檢查對應的event是否存在
+            # If trigger_event_id exists, check if the corresponding event exists
             if trigger_id is not None:
                 event = await connection.fetchrow(
                     "SELECT id, source, event_type FROM events WHERE id = $1",
@@ -41,13 +41,13 @@ async def check_incidents_and_events():
                 )
                 if event:
                     print(
-                        f"  對應的事件存在: Event #{event['id']} - {event['source']}/{event['event_type']}"
+                        f"  Corresponding event exists: Event #{event['id']} - {event['source']}/{event['event_type']}"
                     )
                 else:
-                    print(f"  ⚠️ 對應的事件不存在！")
+                    print(f"  ⚠️ Corresponding event does not exist!")
 
-        # 檢查events與incidents的關聯
-        print("\n=== Events表情況 ===")
+        # Check relationships between events and incidents
+        print("\n=== Events Table Status ===")
         events = await connection.fetch(
             """
             SELECT e.id, e.source, e.event_type, e.related_incident_id,
@@ -59,7 +59,7 @@ async def check_incidents_and_events():
             """
         )
         total_events = await connection.fetchval("SELECT COUNT(*) FROM events")
-        print(f"總共有 {total_events} 個events (僅顯示前20個)")
+        print(f"Total {total_events} events (showing first 20 only)")
 
         trigger_count = 0
         for event in events:
@@ -67,33 +67,35 @@ async def check_incidents_and_events():
             related_incident_id = event["related_incident_id"]
             is_trigger = event["related_incident_id"]
 
-            # 基本資訊
+            # Basic information
             print(f"Event #{event_id} - {event['source']}/{event['event_type']}")
 
-            # 是否與incident關聯
+            # Check if related to incident
             if related_incident_id:
-                print(f"  屬於 Incident #{related_incident_id}")
+                print(f"  Associated with Incident #{related_incident_id}")
             else:
-                print(f"  不屬於任何incident")
+                print(f"  Not associated with any incident")
 
-            # 是否為trigger event
+            # Check if trigger event
             if is_trigger:
                 trigger_count += 1
-                print(f"  是 Incident #{is_trigger} 的trigger event ✓")
+                print(f"  Is trigger event for Incident #{is_trigger} ✓")
             else:
-                print(f"  不是任何incident的trigger event")
+                print(f"  Not a trigger event for any incident")
 
-        # 獲取總的trigger event數量
+        # Get total trigger event count
         total_trigger_count = await connection.fetchval(
             """
             SELECT COUNT(*) FROM events e
             JOIN incidents i ON e.id = i.trigger_event_id
             """
         )
-        print(f"\n總結: {total_trigger_count}/{total_events} 的事件是trigger events")
+        print(
+            f"\nSummary: {total_trigger_count}/{total_events} events are trigger events"
+        )
 
-        # 檢查不一致情況
-        print("\n=== 檢查不一致情況 ===")
+        # Check for inconsistencies
+        print("\n=== Checking Inconsistencies ===")
         inconsistencies = await connection.fetch(
             """
             SELECT i.id, i.title, i.trigger_event_id, e.id AS event_id
@@ -105,22 +107,24 @@ async def check_incidents_and_events():
 
         if inconsistencies:
             print(
-                f"找到 {len(inconsistencies)} 個不一致情況(trigger_event_id指向不存在的event)"
+                f"Found {len(inconsistencies)} inconsistencies (trigger_event_id pointing to non-existent events)"
             )
             for row in inconsistencies:
                 title = row["title"]
                 if len(title) > 40:
                     title = title[:40] + "..."
                 print(f"Incident #{row['id']} '{title}'")
-                print(f"  trigger_event_id={row['trigger_event_id']} 指向不存在的事件")
+                print(
+                    f"  trigger_event_id={row['trigger_event_id']} points to non-existent event"
+                )
         else:
-            print("未發現不一致情況")
+            print("No inconsistencies found")
 
-        # 關閉連接
+        # Close connection
         await connection.close()
 
     except Exception as e:
-        print(f"錯誤: {str(e)}")
+        print(f"Error: {str(e)}")
 
 
 if __name__ == "__main__":

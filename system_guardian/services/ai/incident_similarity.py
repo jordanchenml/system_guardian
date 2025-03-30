@@ -8,7 +8,7 @@ from loguru import logger
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-# 使用轉發導入避免循環導入
+# Use forward imports to avoid circular imports
 from system_guardian.services.vector_db import types
 from system_guardian.settings import settings
 from system_guardian.services.ai.severity_classifier import SeverityClassifier
@@ -37,7 +37,7 @@ class IncidentSimilarityService:
 
     def __init__(
         self,
-        qdrant_client,  # 移除類型標注來避免循環導入
+        qdrant_client,  # Remove type annotation to avoid circular imports
         openai_client: Optional[AsyncOpenAI] = None,
         embedding_model: str = "text-embedding-3-small",
         ai_engine=None,
