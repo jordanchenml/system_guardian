@@ -73,20 +73,20 @@ class Settings(BaseSettings):
     # OpenAI settings
     openai_api_key: str = os.getenv("SYSTEM_GUARDIAN_OPENAI_API_KEY")
     openai_embedding_model: str = "text-embedding-ada-002"
-    openai_completion_model: str = "gpt-3.5-turbo"
+    openai_completion_model: str = "gpt-4o-mini"
 
     # AI task-specific model settings
     ai_incident_detection_model: str = (
-        "gpt-3.5-turbo"  # Model for incident detection and analysis
+        "gpt-4o-mini"  # Model for incident detection and analysis
     )
     ai_severity_classification_model: str = (
-        "gpt-3.5-turbo"  # Model for severity classification
+        "gpt-4o-mini"  # Model for severity classification
     )
-    ai_similarity_search_model: str = "gpt-3.5-turbo"  # Model for similarity search
-    ai_resolution_generation_model: str = "gpt-4"  # Model for solution generation
-    ai_root_cause_analysis_model: str = "gpt-4"  # Model for root cause analysis
-    ai_report_generation_model: str = "gpt-4"  # Model for report generation
-    ai_trend_analysis_model: str = "gpt-3.5-turbo"  # Model for trend analysis
+    ai_similarity_search_model: str = "gpt-4o-mini"  # Model for similarity search
+    ai_resolution_generation_model: str = "gpt-4o"  # Model for solution generation
+    ai_root_cause_analysis_model: str = "gpt-4o"  # Model for root cause analysis
+    ai_report_generation_model: str = "gpt-4o"  # Model for report generation
+    ai_trend_analysis_model: str = "gpt-4o-mini"  # Model for trend analysis
 
     # Whether to allow using advanced models (e.g., GPT-4)
     ai_allow_advanced_models: bool = True
